@@ -17,7 +17,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.espflash_flutter"
+        applicationId = "it.denv.espflash_flutter"
         minSdk = 24
         targetSdk = 36
         versionCode = flutter.versionCode
