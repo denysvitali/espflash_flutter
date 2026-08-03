@@ -1,0 +1,17 @@
+# Flutter / Dart / Java / Make toolchain for espflasher.
+#
+# Pins Flutter 3.41.9 / Dart 3.11.5 / Java 21 / GNU Make 4.4.1, matching
+# the happy_flutter toolchain.
+#
+# Activate with: `mise install` (or `mise use` on first run).
+# When paired with direnv, `.envrc` calls `use mise` so flutter /
+# dart / java / make land on PATH the moment you `cd` into the repo.
+[tools]
+flutter = "3.41.9"
+dart    = "3.11.5"
+java    = "21.0.2"
+make    = "4.4.1"
+
+[env]
+# Cap the Dart VM heap to match CI and avoid OOMs on heavy local runs.
+DART_VM_OPTIONS = "--max-gen-heap-size=4096"
