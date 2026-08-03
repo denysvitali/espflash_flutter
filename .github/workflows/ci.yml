@@ -1,0 +1,333 @@
+name: ESPFlash Flutter CI/CD
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+env:
+  DART_VM_OPTIONS: '--max-gen-heap-size=4096'
+
+permissions:
+  contents: write
+
+jobs:
+  # Run analyze and test in parallel — both need pub get but are independent after
+  analyze:
+    name: Analyze Code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup mise
+        uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      - name: Get dependencies
+        run: mise exec -- flutter pub get
+
+      - name: Analyze code
+        run: mise exec -- flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
+
+  test:
+    name: Test (shard ${{ matrix.shard }}/${{ matrix.total_shards }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+        total_shards: [2]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Setup mise
+        uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      - name: Get dependencies
+        run: mise exec -- flutter pub get
+
+      - name: Run tests
+        run: >-
+          mise exec -- flutter test --no-pub
+          --test-randomize-ordering-seed=random
+          --shard-index ${{ matrix.shard }}
+          --total-shards ${{ matrix.total_shards }}
+
+  build-debug:
+    name: Build Debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: |
+      github.event_name != 'workflow_dispatch' &&
+      !startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Determine build metadata
+        id: build_meta
+        run: |
+          BUILD_NUMBER=$(( ${{ github.run_number }} * 100 + ${{ github.run_attempt }} ))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Prepare signing keystore (optional)
+        id: debug_keystore
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "KEYSTORE_PATH=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > ci-keystore.jks
+          echo "KEYSTORE_PATH=${{ github.workspace }}/ci-keystore.jks" >> $GITHUB_OUTPUT
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
+      - name: Setup mise
+        uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses || true
+
+      - name: Cache Gradle
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      - name: Get dependencies
+        run: mise exec -- flutter pub get
+
+      - name: Build Debug APK
+        run: |
+          mise exec -- flutter build apk --debug --no-pub \
+            --target-platform android-arm64 \
+            --build-number ${{ steps.build_meta.outputs.BUILD_NUMBER }}
+        env:
+          KEYSTORE_PATH: ${{ steps.debug_keystore.outputs.KEYSTORE_PATH }}
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: espflash-flutter-debug-b${{ steps.build_meta.outputs.BUILD_NUMBER }}
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          retention-days: 14
+
+  build-release:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Determine build metadata
+        id: build_meta
+        run: |
+          BUILD_NUMBER=$(( ${{ github.run_number }} * 100 + ${{ github.run_attempt }} ))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Create keystore (optional — falls back to debug signing)
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > release-keystore.jks
+            echo "KEYSTORE_PATH=${{ github.workspace }}/release-keystore.jks" >> $GITHUB_ENV
+          fi
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+
+      - name: Setup mise
+        uses: jdx/mise-action@v3
+        with:
+          install: true
+          cache: true
+
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses || true
+
+      - name: Cache Gradle
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache pub dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      - name: Get dependencies
+        run: mise exec -- flutter pub get
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
+          GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx4g'
+        run: |
+          set +e
+          mise exec -- flutter build apk --release --no-pub \
+            --target-platform android-arm64 \
+            --build-number ${{ steps.build_meta.outputs.BUILD_NUMBER }} \
+            --split-debug-info=build/debug-info \
+            --obfuscate 2>&1 | tee build-release.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Release APK build failed with status $status"
+            grep -E -i \
+              'FAILURE:|What went wrong|Execution failed|Missing class|OutOfMemory|Could not|Exception|Error:' \
+              build-release.log || true
+            echo "::group::Release build log tail"
+            tail -n 200 build-release.log
+            echo "::endgroup::"
+            exit "$status"
+          fi
+
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: espflash-flutter-release-b${{ steps.build_meta.outputs.BUILD_NUMBER }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
+
+      - name: Upload debug info artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: debug-info-release-b${{ steps.build_meta.outputs.BUILD_NUMBER }}
+          path: build/debug-info/
+          retention-days: 90
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-release]
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Compute build metadata
+        id: build_meta
+        run: |
+          BUILD_NUMBER=$(( ${{ github.run_number }} * 100 + ${{ github.run_attempt }} ))
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+
+      - name: Determine release version
+        id: release_version
+        run: |
+          SEMVER=$(grep '^version:' pubspec.yaml | sed 's/version: *//' | cut -d'+' -f1 | tr -d ' ')
+          RELEASE_TAG="v${SEMVER}-${{ steps.build_meta.outputs.BUILD_NUMBER }}"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Download release APK
+        uses: actions/download-artifact@v8
+        with:
+          name: espflash-flutter-release-b${{ steps.build_meta.outputs.BUILD_NUMBER }}
+          path: release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.release_version.outputs.RELEASE_TAG }}
+          name: espflash_flutter ${{ steps.release_version.outputs.RELEASE_TAG }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
