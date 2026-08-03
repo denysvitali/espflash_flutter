@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- This app only makes sense on phones/tablets with a USB host port. -->
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="true"/>
+    <!-- Firmware can be downloaded from a URL. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="espflasher"
         android:name="${applicationName}"
@@ -24,6 +30,14 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Relaunch (singleTop) when a supported ESP board is plugged
+                 in; res/xml/device_filter.xml selects the VID/PID pairs. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter"/>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

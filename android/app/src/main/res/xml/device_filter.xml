@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB_DEVICE_ATTACHED filter. Ids must be DECIMAL; hex fails silently. -->
+<resources>
+    <!-- 0x303A Espressif: USB-Serial-JTAG PID 0x1001 = 4097 -->
+    <usb-device vendor-id="12346"/>
+    <!-- 0x10C4/0xEA60 CP210x -->
+    <usb-device vendor-id="4292" product-id="60000"/>
+    <!-- 0x1A86/0x7523 CH340 -->
+    <usb-device vendor-id="6790" product-id="29987"/>
+    <!-- 0x1A86/0x55D4 CH9102 -->
+    <usb-device vendor-id="6790" product-id="21972"/>
+    <!-- 0x0403 FTDI, any PID -->
+    <usb-device vendor-id="1027"/>
+</resources>
