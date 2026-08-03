@@ -53,11 +53,27 @@ mise exec -- flutter test
 Build a debug APK:
 
 ```sh
-mise exec -- flutter build apk --debug --target-platform android-arm64
+make build-dev       # = flutter build apk --debug --flavor development
 ```
 
 Requires an Android SDK (`local.properties` → `sdk.dir`); CI builds
-APKs on every push (see `.github/workflows/ci.yml`).
+APKs on every push (see `.github/workflows/ci.yml`) and publishes a
+GitHub release for every commit on `main`.
+
+### Release signing (one-time)
+
+Release APKs are signed with a stable key once the CI secrets exist:
+
+```sh
+make release-key     # = scripts/setup-release-keystore.sh --upload
+```
+
+The script generates `~/.espflash_flutter/release-keystore.jks`
+(RSA-4096, 30-year validity), prints the generated passwords exactly
+once, and uploads the four `KEYSTORE_*` secrets via `gh`. Back up the
+`.jks` and passwords offline — losing them means never shipping an
+update under the same signature. Without secrets, CI falls back to
+debug signing.
 
 ## Using it
 
