@@ -48,13 +48,14 @@ android {
     }
 
     val keystorePath = System.getenv("KEYSTORE_PATH")
+    val keystoreAlias = (System.getenv("KEYSTORE_KEY_ALIAS") ?: "").ifBlank { "espflash" }
     signingConfigs {
         create("release") {
             if (!keystorePath.isNullOrBlank()) {
                 storeFile = file(keystorePath)
                 storePassword = System.getenv("KEYSTORE_STORE_PASSWORD")
                 keyPassword = System.getenv("KEYSTORE_KEY_PASSWORD")
-                keyAlias = System.getenv("KEYSTORE_KEY_ALIAS")
+                keyAlias = keystoreAlias
             }
         }
     }

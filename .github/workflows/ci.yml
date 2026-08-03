@@ -137,10 +137,9 @@ jobs:
             echo "::error::Fix: gh secret set KEYSTORE_BASE64 < ~/.espflash_flutter/release-keystore.jks.b64"
             exit 1
           fi
-          if [ -z "$KEYSTORE_KEY_ALIAS" ] || \
-             ! keytool -list -keystore ci-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" -alias "$KEYSTORE_KEY_ALIAS" >/dev/null 2>&1; then
-            echo "::error::KEYSTORE_KEY_ALIAS ('$KEYSTORE_KEY_ALIAS') is empty or not present in the keystore."
-            echo "::error::Fix: printf 'espflash' | gh secret set KEYSTORE_KEY_ALIAS"
+          ALIAS="${KEYSTORE_KEY_ALIAS:-espflash}"
+          if ! keytool -list -keystore ci-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" -alias "$ALIAS" >/dev/null 2>&1; then
+            echo "::error::Alias '$ALIAS' not present in the keystore (set KEYSTORE_KEY_ALIAS to override the default 'espflash')."
             exit 1
           fi
           echo "KEYSTORE_PATH=${{ github.workspace }}/ci-keystore.jks" >> $GITHUB_OUTPUT
@@ -232,10 +231,9 @@ jobs:
               echo "::error::Fix: gh secret set KEYSTORE_BASE64 < ~/.espflash_flutter/release-keystore.jks.b64"
               exit 1
             fi
-            if [ -z "$KEYSTORE_KEY_ALIAS" ] || \
-               ! keytool -list -keystore release-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" -alias "$KEYSTORE_KEY_ALIAS" >/dev/null 2>&1; then
-              echo "::error::KEYSTORE_KEY_ALIAS ('$KEYSTORE_KEY_ALIAS') is empty or not present in the keystore."
-              echo "::error::Fix: printf 'espflash' | gh secret set KEYSTORE_KEY_ALIAS"
+            ALIAS="${KEYSTORE_KEY_ALIAS:-espflash}"
+            if ! keytool -list -keystore release-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" -alias "$ALIAS" >/dev/null 2>&1; then
+              echo "::error::Alias '$ALIAS' not present in the keystore (set KEYSTORE_KEY_ALIAS to override the default 'espflash')."
               exit 1
             fi
             echo "KEYSTORE_PATH=${{ github.workspace }}/release-keystore.jks" >> $GITHUB_ENV
