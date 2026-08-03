@@ -58,13 +58,14 @@ jobs:
         run: mise exec -- flutter analyze --no-pub --no-fatal-infos --no-fatal-warnings
 
   test:
-    name: Test (shard ${{ matrix.shard }}/${{ matrix.total_shards }})
+    # flutter test --shard-index is 0-based; display shard+1 for humans.
+    name: Test (shard ${{ matrix.shard + 1 }}/${{ matrix.total_shards }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [0, 1]
         total_shards: [2]
     steps:
       - name: Checkout repository
