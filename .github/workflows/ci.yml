@@ -109,9 +109,8 @@ jobs:
     name: Build Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: |
-      github.event_name != 'workflow_dispatch' &&
-      !startsWith(github.ref, 'refs/tags/v')
+    # Manual only: release build covers every push; debug APK on demand.
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Checkout repository
@@ -138,10 +137,17 @@ jobs:
             echo "::error::Fix: gh secret set KEYSTORE_BASE64 < ~/.espflash_flutter/release-keystore.jks.b64"
             exit 1
           fi
+          if [ -z "$KEYSTORE_KEY_ALIAS" ] || \
+             ! keytool -list -keystore ci-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" -alias "$KEYSTORE_KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error::KEYSTORE_KEY_ALIAS ('$KEYSTORE_KEY_ALIAS') is empty or not present in the keystore."
+            echo "::error::Fix: printf 'espflash' | gh secret set KEYSTORE_KEY_ALIAS"
+            exit 1
+          fi
           echo "KEYSTORE_PATH=${{ github.workspace }}/ci-keystore.jks" >> $GITHUB_OUTPUT
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
 
       - name: Setup mise
         uses: jdx/mise-action@v3
@@ -226,11 +232,18 @@ jobs:
               echo "::error::Fix: gh secret set KEYSTORE_BASE64 < ~/.espflash_flutter/release-keystore.jks.b64"
               exit 1
             fi
+            if [ -z "$KEYSTORE_KEY_ALIAS" ] || \
+               ! keytool -list -keystore release-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" -alias "$KEYSTORE_KEY_ALIAS" >/dev/null 2>&1; then
+              echo "::error::KEYSTORE_KEY_ALIAS ('$KEYSTORE_KEY_ALIAS') is empty or not present in the keystore."
+              echo "::error::Fix: printf 'espflash' | gh secret set KEYSTORE_KEY_ALIAS"
+              exit 1
+            fi
             echo "KEYSTORE_PATH=${{ github.workspace }}/release-keystore.jks" >> $GITHUB_ENV
           fi
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
+          KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
 
       - name: Setup mise
         uses: jdx/mise-action@v3
