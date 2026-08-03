@@ -319,20 +319,22 @@ class _LogView extends StatelessWidget {
                 textAlign: TextAlign.center,
               ),
             )
-          : ListView.builder(
-              controller: scroll,
-              padding: const EdgeInsets.all(8),
-              itemCount: lines.length,
-              itemBuilder: (BuildContext context, int index) {
-                final line = lines[index];
-                return Text(
-                  _render(line),
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                    color: _lineColor(context, line),
-                  ),
-                );
-              },
+          : SelectionArea(
+              child: ListView.builder(
+                controller: scroll,
+                padding: const EdgeInsets.all(8),
+                itemCount: lines.length,
+                itemBuilder: (BuildContext context, int index) {
+                  final line = lines[index];
+                  return Text(
+                    _render(line),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                      color: _lineColor(context, line),
+                    ),
+                  );
+                },
+              ),
             ),
     );
   }

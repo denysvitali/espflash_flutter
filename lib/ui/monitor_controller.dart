@@ -281,9 +281,11 @@ final class MonitorController extends Notifier<MonitorState> {
     final decoder = _decoder;
     final lines = <MonitorLine>[];
     if (state.hexMode) {
+      // Pure diagnostic view: hex only, decoded lines would just
+      // duplicate the same bytes as (mangled) text.
       lines.add(MonitorLine(text: _hexDump(bytes), isRaw: true));
-    }
-    if (decoder == null) {
+      decoder?.feed(bytes); // keep dropped-frame counter honest
+    } else if (decoder == null) {
       // No ELF staged: everything is raw text.
       lines.addAll(_rawTextLines(bytes));
     } else {

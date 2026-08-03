@@ -427,17 +427,19 @@ class _LogCard extends StatelessWidget {
                 ),
                 child: state.log.isEmpty
                     ? const Center(child: Text('Nothing yet.'))
-                    : ListView.builder(
-                        controller: scrollController,
-                        padding: const EdgeInsets.all(8),
-                        itemCount: state.log.length,
-                        itemBuilder: (BuildContext context, int index) {
-                          return Text(
-                            state.log[index],
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(fontFamily: 'monospace'),
-                          );
-                        },
+                    : SelectionArea(
+                        child: ListView.builder(
+                          controller: scrollController,
+                          padding: const EdgeInsets.all(8),
+                          itemCount: state.log.length,
+                          itemBuilder: (BuildContext context, int index) {
+                            return Text(
+                              state.log[index],
+                              style: Theme.of(context).textTheme.bodySmall
+                                  ?.copyWith(fontFamily: 'monospace'),
+                            );
+                          },
+                        ),
                       ),
               ),
             ),
