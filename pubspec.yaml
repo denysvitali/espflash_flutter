@@ -11,6 +11,17 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # State management (mirrors happy_flutter)
+  flutter_riverpod: ^3.2.0
+
+  # Firmware source: local file picker + URL download
+  file_picker: ^11.0.3
+  dio: ^5.11.0
+  path_provider: ^2.1.6
+
+  # MD5 verification of flashed data (matches ROM SPI_FLASH_MD5)
+  crypto: ^3.0.6
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
