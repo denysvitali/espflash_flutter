@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../usb/usb_device.dart';
 import 'flash_controller.dart';
 import 'flash_state.dart';
+import 'monitor_page.dart';
 
 /// Home screen of the app.
 class FlashHomePage extends ConsumerStatefulWidget {
@@ -64,6 +65,17 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
       appBar: AppBar(
         title: const Text('espflash'),
         actions: <Widget>[
+          IconButton(
+            icon: const Icon(Icons.terminal),
+            tooltip: 'Serial monitor (defmt)',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => const MonitorPage(),
+                ),
+              );
+            },
+          ),
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: Center(

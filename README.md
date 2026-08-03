@@ -36,6 +36,11 @@ is planned for v2.
 - MD5 verification against the ROM
 - Live flashing log, progress per part, cancel support
 - Auto-detect when the device is plugged in (USB_DEVICE_ATTACHED)
+- Serial monitor with [defmt](https://defmt.ferrous-systems.com/)
+  decoding: pick the firmware's ELF and watch `defmt::info!` & friends
+  rendered live (rzcobs framing as emitted by esp-println's
+  `FF 00 … 00` markers); non-defmt serial output passes through as raw
+  text. Level filter, text filter, pause, chip reset included.
 
 ## Development
 
