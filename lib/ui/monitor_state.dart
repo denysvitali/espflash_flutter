@@ -52,6 +52,7 @@ final class MonitorState {
     this.filter = '',
     this.minLevel,
     this.droppedFrames = 0,
+    this.bytesReceived = 0,
     this.statusBanner,
     this.bannerIsError = false,
   });
@@ -69,6 +70,10 @@ final class MonitorState {
   /// Minimum defmt level shown; null shows everything (incl. raw).
   final DefmtLevel? minLevel;
   final int droppedFrames;
+
+  /// Total serial bytes seen since Start (even undecodable ones) —
+  /// distinguishes "device silent" from "decoder drops everything".
+  final int bytesReceived;
   final String? statusBanner;
   final bool bannerIsError;
 
@@ -107,6 +112,7 @@ final class MonitorState {
     String? filter,
     DefmtLevel? Function()? minLevel,
     int? droppedFrames,
+    int? bytesReceived,
     String? Function()? statusBanner,
     bool? bannerIsError,
   }) {
@@ -122,6 +128,7 @@ final class MonitorState {
       filter: filter ?? this.filter,
       minLevel: minLevel != null ? minLevel() : this.minLevel,
       droppedFrames: droppedFrames ?? this.droppedFrames,
+      bytesReceived: bytesReceived ?? this.bytesReceived,
       statusBanner: statusBanner != null ? statusBanner() : this.statusBanner,
       bannerIsError: bannerIsError ?? this.bannerIsError,
     );

@@ -10,9 +10,12 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../defmt/defmt.dart';
+import '../esp/chip_detect.dart';
+import '../esp/connection.dart';
 import '../esp/errors.dart';
 import '../esp/reset.dart';
 import '../esp/transport.dart';
+import '../usb/android_usb_transport.dart';
 import '../usb/usb_device.dart';
 import '../usb/usb_events.dart';
 import '../usb/usb_service.dart';
@@ -33,7 +36,12 @@ final class MonitorController extends Notifier<MonitorState> {
   StreamSubscription<UsbEvent>? _eventsSub;
   StreamSubscription<Uint8List>? _dataSub;
   Completer<bool>? _permissionWaiter;
+  DefmtTable? _table;
   DefmtLogDecoder? _decoder;
+
+  /// While the USB-JTAG reset dance runs, SLIP chatter hits the data
+  /// stream; don't decode it as log output.
+  bool _suppressData = false;
 
   /// Partial raw text not yet terminated by a newline.
   final List<int> _rawPending = <int>[];
@@ -103,6 +111,7 @@ final class MonitorController extends Notifier<MonitorState> {
         );
       }
       _decoder = DefmtLogDecoder(table);
+      _table = table;
       _rawPending.clear();
       state = state.copyWith(
         elf: () => ElfInfo(
@@ -123,6 +132,7 @@ final class MonitorController extends Notifier<MonitorState> {
 
   void clearElf() {
     _decoder = null;
+    _table = null;
     state = state.copyWith(elf: () => null);
   }
 
@@ -152,7 +162,14 @@ final class MonitorController extends Notifier<MonitorState> {
         onError: (Object error) =>
             _banner('serial error: $error', isError: true),
       );
-      state = state.copyWith(phase: MonitorPhase.streaming);
+      state = state.copyWith(phase: MonitorPhase.streaming, bytesReceived: 0);
+      // Most firmware logs at boot: reset so the user actually sees
+      // output. A failed reset must not kill the stream.
+      try {
+        await _resetChip(device);
+      } on Object catch (error) {
+        _banner('auto-reset failed: $error (streaming anyway)');
+      }
     } on Object catch (error) {
       await _teardown();
       _banner('$error', isError: true);
@@ -163,15 +180,48 @@ final class MonitorController extends Notifier<MonitorState> {
     await _teardown();
   }
 
-  /// Reboot the chip into its firmware (EN pulse via RTS).
+  /// Reboot the chip into its firmware.
+  ///
+  /// On UART bridges this is an EN pulse via RTS. On the native
+  /// USB-Serial-JTAG port DTR/RTS never reach the chip, so we enter the
+  /// ROM bootloader and trigger an RTC watchdog reset instead (same as
+  /// the flasher's post-flash reboot).
   Future<void> resetChip() async {
-    if (state.phase != MonitorPhase.streaming) {
+    final device = state.selectedDevice;
+    if (state.phase != MonitorPhase.streaming || device == null) {
       return;
     }
     try {
-      await const HardReset().reset(_TransportAdapter(_usb));
+      await _resetChip(device);
     } on Object catch (error) {
       _banner('reset failed: $error', isError: true);
+    }
+  }
+
+  Future<void> _resetChip(UsbDevice device) async {
+    if (!device.isUsbJtag) {
+      // Release the auto-reset lines, then pulse EN.
+      await _usb.setDtr(false);
+      await _usb.setRts(false);
+      await const HardReset().reset(_TransportAdapter(_usb));
+      return;
+    }
+    _suppressData = true;
+    try {
+      final transport = AndroidUsbTransport(service: _usb, device: device);
+      final connection = EspConnection(transport);
+      await connection.connect(resetStrategy: const UsbJtagReset());
+      final target = await detectChip(connection);
+      await target.rtcWdtReset(connection);
+      await connection.close();
+    } finally {
+      _suppressData = false;
+      _rawPending.clear();
+      // SLIP noise may have left the frame parser mid-frame; start fresh.
+      final table = _table;
+      if (table != null) {
+        _decoder = DefmtLogDecoder(table);
+      }
     }
   }
 
@@ -192,7 +242,7 @@ final class MonitorController extends Notifier<MonitorState> {
   }
 
   void _onData(Uint8List bytes) {
-    if (state.paused) {
+    if (_suppressData || state.paused) {
       return;
     }
     final decoder = _decoder;
@@ -216,15 +266,13 @@ final class MonitorController extends Notifier<MonitorState> {
         }
       }
     }
-    if (lines.isEmpty && decoder == null) {
-      return;
-    }
     var all = <MonitorLine>[...state.lines, ...lines];
     if (all.length > _maxLines) {
       all = all.sublist(all.length - _maxLines);
     }
     state = state.copyWith(
       lines: all,
+      bytesReceived: state.bytesReceived + bytes.length,
       droppedFrames: decoder?.droppedFrames ?? 0,
     );
   }

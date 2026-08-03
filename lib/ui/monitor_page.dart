@@ -228,13 +228,15 @@ class _ControlsBar extends StatelessWidget {
               ],
               onChanged: controller.setMinLevel,
             ),
-            if (state.droppedFrames > 0)
+            if (state.phase == MonitorPhase.streaming)
               Padding(
                 padding: const EdgeInsets.only(left: 8),
                 child: Text(
-                  '${state.droppedFrames} frames dropped',
+                  _byteCounterLabel(state),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: Theme.of(context).colorScheme.error,
+                    color: state.droppedFrames > 0
+                        ? Theme.of(context).colorScheme.error
+                        : Theme.of(context).colorScheme.outline,
                   ),
                 ),
               ),
@@ -285,8 +287,10 @@ class _LogView extends StatelessWidget {
           ? Center(
               child: Text(
                 state.phase == MonitorPhase.streaming
-                    ? 'Listening…'
+                    ? 'Listening… (${state.bytesReceived} bytes)\n'
+                          'Nothing yet? Tap reset to reboot the chip.'
                     : 'Pick an ELF, select a device, press Start.',
+                textAlign: TextAlign.center,
               ),
             )
           : ListView.builder(
@@ -333,4 +337,10 @@ String _deviceLabel(UsbDevice device) {
   final vid = device.vendorId.toRadixString(16).padLeft(4, '0');
   final pid = device.productId.toRadixString(16).padLeft(4, '0');
   return '$name ($vid:$pid)';
+}
+
+String _byteCounterLabel(MonitorState state) {
+  final dropped = state.droppedFrames;
+  return '${state.bytesReceived} B'
+      '${dropped > 0 ? ', $dropped dropped' : ''}';
 }
