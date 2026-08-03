@@ -133,9 +133,15 @@ jobs:
             exit 0
           fi
           echo "$KEYSTORE_BASE64" | base64 -d > ci-keystore.jks
+          if ! keytool -list -keystore ci-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" >/dev/null 2>&1; then
+            echo "::error::KEYSTORE_BASE64 did not decode to a valid JKS, or KEYSTORE_STORE_PASSWORD is wrong."
+            echo "::error::Fix: gh secret set KEYSTORE_BASE64 < ~/.espflash_flutter/release-keystore.jks.b64"
+            exit 1
+          fi
           echo "KEYSTORE_PATH=${{ github.workspace }}/ci-keystore.jks" >> $GITHUB_OUTPUT
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
 
       - name: Setup mise
         uses: jdx/mise-action@v3
@@ -215,10 +221,16 @@ jobs:
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > release-keystore.jks
+            if ! keytool -list -keystore release-keystore.jks -storepass "$KEYSTORE_STORE_PASSWORD" >/dev/null 2>&1; then
+              echo "::error::KEYSTORE_BASE64 did not decode to a valid JKS, or KEYSTORE_STORE_PASSWORD is wrong."
+              echo "::error::Fix: gh secret set KEYSTORE_BASE64 < ~/.espflash_flutter/release-keystore.jks.b64"
+              exit 1
+            fi
             echo "KEYSTORE_PATH=${{ github.workspace }}/release-keystore.jks" >> $GITHUB_ENV
           fi
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_STORE_PASSWORD: ${{ secrets.KEYSTORE_STORE_PASSWORD }}
 
       - name: Setup mise
         uses: jdx/mise-action@v3

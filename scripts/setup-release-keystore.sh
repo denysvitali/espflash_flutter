@@ -62,8 +62,44 @@ if [ "$UPLOAD" -eq 1 ]; then
   need gh "run 'mise install' (github-cli is pinned in .mise.toml)"
 fi
 
+# --- helpers ------------------------------------------------------------------
+B64_FILE="${KEYSTORE}.b64"
+
+upload_secrets() {
+  local gh_args=()
+  [ -n "$REPO" ] && gh_args+=(--repo "$REPO")
+  echo ">> uploading secrets to GitHub (${REPO:-auto-detected repo})"
+  run_mise gh secret set KEYSTORE_BASE64 "${gh_args[@]}" < "$B64_FILE"
+  printf '%s' "$KEYSTORE_STORE_PASSWORD" | run_mise gh secret set KEYSTORE_STORE_PASSWORD "${gh_args[@]}"
+  printf '%s' "$KEYSTORE_KEY_PASSWORD"  | run_mise gh secret set KEYSTORE_KEY_PASSWORD "${gh_args[@]}"
+  printf '%s' "$ALIAS"                  | run_mise gh secret set KEYSTORE_KEY_ALIAS "${gh_args[@]}"
+  echo ">> secret state on GitHub:"
+  run_mise gh secret list "${gh_args[@]}" | grep -E '^KEYSTORE' | sed 's/^/   /'
+}
+
+prompt_passwords_if_needed() {
+  if [ -z "${KEYSTORE_STORE_PASSWORD:-}" ]; then
+    [ -t 0 ] || { echo "KEYSTORE_STORE_PASSWORD not set and no TTY to prompt" >&2; exit 69; }
+    read -r -s -p "store password: " KEYSTORE_STORE_PASSWORD; echo
+  fi
+  if [ -z "${KEYSTORE_KEY_PASSWORD:-}" ]; then
+    [ -t 0 ] || { echo "KEYSTORE_KEY_PASSWORD not set and no TTY to prompt" >&2; exit 69; }
+    read -r -s -p "key password: " KEYSTORE_KEY_PASSWORD; echo
+  fi
+}
+
 # --- guard: never silently replace the stable key ----------------------------
 if [ -f "$KEYSTORE" ] && [ "$FORCE" -eq 0 ]; then
+  if [ "$UPLOAD" -eq 1 ]; then
+    # Recovery mode: the key exists (and may already be distributed),
+    # only the CI secrets need (re-)uploading.
+    echo ">> keystore exists — upload-only mode, no new key generated"
+    base64 < "$KEYSTORE" | tr -d '\n' > "$B64_FILE"
+    chmod 600 "$B64_FILE"
+    prompt_passwords_if_needed
+    upload_secrets
+    exit 0
+  fi
   cat >&2 <<EOF
 keystore already exists: $KEYSTORE
 
@@ -73,6 +109,7 @@ existing installs can never update.
 
 If you are sure the old key is backed up (or was never used to sign a
 distributed build), re-run with --force.
+If you only need to re-upload the CI secrets, re-run with --upload.
 EOF
   exit 65
 fi
@@ -81,6 +118,13 @@ fi
 random_password() {
   # 24 random bytes, URL-safe base64, no padding — 32 chars of A-Za-z0-9-_
   head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n'
+}
+check_password_length() {
+  # keytool rejects passwords shorter than 6 characters.
+  if [ "${#1}" -lt 6 ]; then
+    echo "password too short (${#1} chars) — keytool requires at least 6" >&2
+    exit 65
+  fi
 }
 GENERATED_PASSWORDS=0
 if [ -z "${KEYSTORE_STORE_PASSWORD:-}" ]; then
@@ -91,6 +135,8 @@ if [ -z "${KEYSTORE_KEY_PASSWORD:-}" ]; then
   KEYSTORE_KEY_PASSWORD="$(random_password)"
   GENERATED_PASSWORDS=1
 fi
+check_password_length "$KEYSTORE_STORE_PASSWORD"
+check_password_length "$KEYSTORE_KEY_PASSWORD"
 
 # --- generate ------------------------------------------------------------------
 mkdir -p "$(dirname "$KEYSTORE")"
@@ -114,21 +160,13 @@ run_mise keytool -list -v \
   | grep -E 'Alias name|Valid from|SHA256:' \
   | sed 's/^/   /'
 
-B64_FILE="${KEYSTORE}.b64"
+# Regenerate the base64 sidecar (B64_FILE was set above).
 base64 < "$KEYSTORE" | tr -d '\n' > "$B64_FILE"
 chmod 600 "$B64_FILE"
 
 # --- upload or print -----------------------------------------------------------
 if [ "$UPLOAD" -eq 1 ]; then
-  gh_args=()
-  [ -n "$REPO" ] && gh_args+=(--repo "$REPO")
-  echo ">> uploading secrets to GitHub (${REPO:-auto-detected repo})"
-  run_mise gh secret set KEYSTORE_BASE64 "${gh_args[@]}" < "$B64_FILE"
-  printf '%s' "$KEYSTORE_STORE_PASSWORD" | run_mise gh secret set KEYSTORE_STORE_PASSWORD "${gh_args[@]}"
-  printf '%s' "$KEYSTORE_KEY_PASSWORD"  | run_mise gh secret set KEYSTORE_KEY_PASSWORD "${gh_args[@]}"
-  printf '%s' "$ALIAS"                  | run_mise gh secret set KEYSTORE_KEY_ALIAS "${gh_args[@]}"
-  echo ">> secret state on GitHub:"
-  run_mise gh secret list "${gh_args[@]}" | grep -E '^KEYSTORE' | sed 's/^/   /'
+  upload_secrets
 else
   cat <<EOF
 
