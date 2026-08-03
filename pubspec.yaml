@@ -22,6 +22,9 @@ dependencies:
   # MD5 verification of flashed data (matches ROM SPI_FLASH_MD5)
   crypto: ^3.0.6
 
+  # Keep the screen on during flashing / serial monitoring
+  wakelock_plus: ^1.4.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

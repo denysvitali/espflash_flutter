@@ -8,6 +8,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../defmt/defmt.dart';
 import '../esp/chip_detect.dart';
@@ -62,6 +63,7 @@ final class MonitorController extends Notifier<MonitorState> {
       } on Object {
         // Port already gone.
       }
+      await _screenOn(false);
     });
     return const MonitorState();
   }
@@ -163,6 +165,7 @@ final class MonitorController extends Notifier<MonitorState> {
             _banner('serial error: $error', isError: true),
       );
       state = state.copyWith(phase: MonitorPhase.streaming, bytesReceived: 0);
+      await _screenOn(true);
       // Most firmware logs at boot: reset so the user actually sees
       // output. A failed reset must not kill the stream.
       try {
@@ -251,6 +254,17 @@ final class MonitorController extends Notifier<MonitorState> {
   void clearLog() {
     state = state.copyWith(lines: const <MonitorLine>[]);
   }
+
+  /// All captured lines, rendered as shown in the log view.
+  String copyableLog() => state.lines
+      .map((line) {
+        final ts = line.timestamp == null ? '' : '[${line.timestamp}] ';
+        final level = line.level == null
+            ? ''
+            : '${line.level!.name.toUpperCase()} ';
+        return '$ts$level${line.text}';
+      })
+      .join('\n');
 
   void setFilter(String filter) {
     state = state.copyWith(filter: filter);
@@ -374,7 +388,18 @@ final class MonitorController extends Notifier<MonitorState> {
     } on Object {
       // Port already gone.
     }
+    await _screenOn(false);
     state = state.copyWith(phase: MonitorPhase.idle);
+  }
+
+  /// Keep the screen awake while streaming; tolerate platforms where the
+  /// wakelock plugin is unavailable (desktop, tests).
+  Future<void> _screenOn(bool on) async {
+    try {
+      await WakelockPlus.toggle(enable: on);
+    } on Object {
+      // No wakelock on this platform.
+    }
   }
 
   void _banner(String message, {bool isError = false}) {

@@ -389,10 +389,33 @@ class _LogCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Text(
-              'Log',
-              key: const ValueKey<String>('logCardTitle'),
-              style: Theme.of(context).textTheme.titleMedium,
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: Text(
+                    'Log',
+                    key: const ValueKey<String>('logCardTitle'),
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 18),
+                  tooltip: 'Copy log to clipboard',
+                  onPressed: state.log.isEmpty
+                      ? null
+                      : () {
+                          Clipboard.setData(
+                            ClipboardData(text: state.log.join('\n')),
+                          );
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Log copied to clipboard'),
+                              duration: Duration(seconds: 1),
+                            ),
+                          );
+                        },
+                ),
+              ],
             ),
             const SizedBox(height: 8),
             SizedBox(

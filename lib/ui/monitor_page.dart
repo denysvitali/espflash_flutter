@@ -3,6 +3,7 @@
 library;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../defmt/table.dart';
@@ -186,6 +187,23 @@ class _ControlsBar extends StatelessWidget {
                   ? Theme.of(context).colorScheme.primary
                   : null,
               onPressed: controller.toggleHexMode,
+            ),
+            IconButton(
+              icon: const Icon(Icons.copy),
+              tooltip: 'Copy all logs to clipboard',
+              onPressed: state.lines.isEmpty
+                  ? null
+                  : () {
+                      Clipboard.setData(
+                        ClipboardData(text: controller.copyableLog()),
+                      );
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Logs copied to clipboard'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    },
             ),
             IconButton(
               icon: const Icon(Icons.delete_outline),

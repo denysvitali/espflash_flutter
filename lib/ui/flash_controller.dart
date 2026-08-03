@@ -7,6 +7,7 @@ import 'dart:async';
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../esp/chip_detect.dart';
 import '../esp/connection.dart';
@@ -49,6 +50,7 @@ final class FlashController extends Notifier<FlashState> {
     ref.onDispose(() async {
       await _eventsSub?.cancel();
       await _teardownConnection();
+      await _screenOn(false);
     });
     return const FlashState();
   }
@@ -165,6 +167,9 @@ final class FlashController extends Notifier<FlashState> {
       );
       final target = await detectChip(connection);
       _target = target;
+      // The ROM's RTC watchdog resets an idle bootloader within a
+      // minute; disarm it before the user takes time to stage firmware.
+      await target.disableWatchdogs(connection);
       _log('Detected ${target.chipName}. Ready to flash.');
       state = state.copyWith(
         phase: FlashPhase.ready,
@@ -196,6 +201,7 @@ final class FlashController extends Notifier<FlashState> {
       bytesTotal: firmware.bytes.length,
       statusBanner: () => null,
     );
+    await _screenOn(true);
     _log(
       'Flashing ${firmware.name} at 0x${offset.toRadixString(16)} '
       '(${firmware.bytes.length} bytes)…',
@@ -228,6 +234,7 @@ final class FlashController extends Notifier<FlashState> {
       _log('MD5 verified. Rebooting into the new firmware.');
       _banner('Flash complete — device rebooted.');
     }
+    await _screenOn(false);
     // The chip has rebooted (or the ROM is in an unknown state after
     // a failure); a fresh sync is required either way, so tear down.
     await _teardownConnection();
@@ -304,6 +311,16 @@ final class FlashController extends Notifier<FlashState> {
       await _usb.close();
     } on Object {
       // Port already gone (device unplugged); nothing to close.
+    }
+  }
+
+  /// Keep the screen awake while flashing; tolerate platforms where the
+  /// wakelock plugin is unavailable (desktop, tests).
+  Future<void> _screenOn(bool on) async {
+    try {
+      await WakelockPlus.toggle(enable: on);
+    } on Object {
+      // No wakelock on this platform.
     }
   }
 
