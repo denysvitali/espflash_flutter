@@ -180,6 +180,14 @@ class _ControlsBar extends StatelessWidget {
               onPressed: controller.togglePause,
             ),
             IconButton(
+              icon: const Icon(Icons.hexagon_outlined),
+              tooltip: 'Hex dump (diagnostic)',
+              color: state.hexMode
+                  ? Theme.of(context).colorScheme.primary
+                  : null,
+              onPressed: controller.toggleHexMode,
+            ),
+            IconButton(
               icon: const Icon(Icons.delete_outline),
               tooltip: 'Clear log',
               onPressed: controller.clearLog,

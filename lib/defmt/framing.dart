@@ -36,6 +36,11 @@ final class FrameDelimiter {
   final List<int> _buffer = <int>[];
   bool _inFrame = false;
 
+  /// defmt frames are small (typically <1 KB); a "frame" larger than
+  /// this means we latched onto a spurious `FF 00` — flush as raw and
+  /// resync instead of buffering forever.
+  static const int maxFrameBytes = 8192;
+
   static const List<int> _frameStart = [0xFF, 0x00];
 
   /// Feed [bytes]; returns all chunks that completed during this call.
@@ -44,6 +49,12 @@ final class FrameDelimiter {
     final out = <FrameChunk>[];
 
     while (true) {
+      if (_inFrame && _buffer.length > maxFrameBytes) {
+        out.add(RawChunk(Uint8List.fromList(_buffer)));
+        _buffer.clear();
+        _inFrame = false;
+        continue;
+      }
       final found = _search(_buffer, _inFrame);
       if (found == null) {
         break;

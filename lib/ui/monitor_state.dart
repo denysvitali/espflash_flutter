@@ -49,6 +49,7 @@ final class MonitorState {
     this.elf,
     this.lines = const <MonitorLine>[],
     this.paused = false,
+    this.hexMode = false,
     this.filter = '',
     this.minLevel,
     this.droppedFrames = 0,
@@ -63,6 +64,10 @@ final class MonitorState {
   final ElfInfo? elf;
   final List<MonitorLine> lines;
   final bool paused;
+
+  /// Show every incoming byte as hex lines (diagnostic: bypasses
+  /// defmt/raw rendering, decoder still runs underneath).
+  final bool hexMode;
 
   /// Case-insensitive substring filter applied to rendered text.
   final String filter;
@@ -109,6 +114,7 @@ final class MonitorState {
     ElfInfo? Function()? elf,
     List<MonitorLine>? lines,
     bool? paused,
+    bool? hexMode,
     String? filter,
     DefmtLevel? Function()? minLevel,
     int? droppedFrames,
@@ -125,6 +131,7 @@ final class MonitorState {
       elf: elf != null ? elf() : this.elf,
       lines: lines ?? this.lines,
       paused: paused ?? this.paused,
+      hexMode: hexMode ?? this.hexMode,
       filter: filter ?? this.filter,
       minLevel: minLevel != null ? minLevel() : this.minLevel,
       droppedFrames: droppedFrames ?? this.droppedFrames,

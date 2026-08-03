@@ -229,6 +229,25 @@ final class MonitorController extends Notifier<MonitorState> {
     state = state.copyWith(paused: !state.paused);
   }
 
+  void toggleHexMode() {
+    state = state.copyWith(hexMode: !state.hexMode);
+  }
+
+  /// One line of offset-prefixed lowercase hex, 16 bytes per row.
+  String _hexDump(Uint8List bytes) => [
+    for (var i = 0; i < bytes.length; i += 16)
+      _hexRow(bytes, i),
+  ].join('\n');
+
+  String _hexRow(Uint8List bytes, int offset) {
+    final end = offset + 16 > bytes.length ? bytes.length : offset + 16;
+    final hex = bytes
+        .sublist(offset, end)
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join(' ');
+    return '${offset.toRadixString(16).padLeft(4, '0')}: $hex';
+  }
+
   void clearLog() {
     state = state.copyWith(lines: const <MonitorLine>[]);
   }
@@ -247,6 +266,9 @@ final class MonitorController extends Notifier<MonitorState> {
     }
     final decoder = _decoder;
     final lines = <MonitorLine>[];
+    if (state.hexMode) {
+      lines.add(MonitorLine(text: _hexDump(bytes), isRaw: true));
+    }
     if (decoder == null) {
       // No ELF staged: everything is raw text.
       lines.addAll(_rawTextLines(bytes));
@@ -256,6 +278,10 @@ final class MonitorController extends Notifier<MonitorState> {
           case RawLine(:final bytes):
             lines.addAll(_rawTextLines(bytes));
           case DefmtLine(:final frame):
+            if (_rawPending.isNotEmpty) {
+              lines.add(_rawLine(_rawPending));
+              _rawPending.clear();
+            }
             lines.add(
               MonitorLine(
                 text: frame.text,
