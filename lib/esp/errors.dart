@@ -48,3 +48,8 @@ final class EspVerifyError extends EspError {
 final class EspCancelledError extends EspError {
   const EspCancelledError() : super('Operation cancelled');
 }
+
+/// The user denied (or dismissed) the USB permission dialog.
+final class EspPermissionDeniedError extends EspError {
+  const EspPermissionDeniedError(super.message);
+}
