@@ -1,0 +1,13 @@
+# NOTICE
+
+This project references and derives protocol knowledge from:
+
+- **esptool-js** (https://github.com/espressif/esptool-js) — Apache License 2.0.
+  Used as the canonical reference for the ESP ROM bootloader protocol
+  (SLIP framing, command opcodes, flash sequence). No code was copied.
+- **usb-serial-for-android** (https://github.com/mik3y/usb-serial-for-android) — MIT License.
+  Bundled as a Gradle dependency (`com.github.mik3y:usb-serial-for-android:3.11.0`)
+  for the Android USB host transport.
+
+Note: esptool.py is GPL-2.0 and was used as documentation reference only;
+no code from it is included in this project.

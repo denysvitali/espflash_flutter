@@ -23,7 +23,7 @@ void main() {
   late EspConnection connection;
   late EspFlasher flasher;
 
-  // Part A: 2305 bytes -> blocks of 1024/1024/257 (last padded to 260).
+  // Part A: 2305 bytes -> blocks of 1024/1024/257 (last padded to 0x400).
   final partA = FirmwarePart(offset: 0x0, bytes: fixture(1, 0x901));
   // Part B: exactly two full blocks.
   final partB = FirmwarePart(offset: 0x10000, bytes: fixture(2, 0x800));
@@ -114,16 +114,17 @@ void main() {
     // Prefixes: <len, seq, 0, 0>.
     expect(dataRequests[0].words.sublist(0, 4), [0x400, 0, 0, 0]);
     expect(dataRequests[1].words.sublist(0, 4), [0x400, 1, 0, 0]);
-    expect(dataRequests[2].words.sublist(0, 4), [0x104, 2, 0, 0]);
+    expect(dataRequests[2].words.sublist(0, 4), [0x400, 2, 0, 0]);
     expect(dataRequests[3].words.sublist(0, 4), [0x400, 0, 0, 0]);
     expect(dataRequests[4].words.sublist(0, 4), [0x400, 1, 0, 0]);
 
-    // Block content: part A sliced, last block padded with 0xFF.
+    // Block content: part A sliced, last block padded to 0x400 with 0xFF.
     final blockA0 = dataRequests[0].data.sublist(16);
     expect(blockA0, partA.bytes.sublist(0, 0x400));
     final blockA2 = dataRequests[2].data.sublist(16);
+    expect(blockA2, hasLength(0x400));
     expect(blockA2.sublist(0, 0x101), partA.bytes.sublist(0x800));
-    expect(blockA2.sublist(0x101), [0xFF, 0xFF, 0xFF]);
+    expect(blockA2.sublist(0x101), List<int>.filled(0x2FF, 0xFF));
     // Part B needs no padding.
     expect(dataRequests[3].data.sublist(16),
         partB.bytes.sublist(0, 0x400));
@@ -290,7 +291,7 @@ void main() {
     );
   });
 
-  test('single-byte part pads to 4 bytes with 0xFF', () async {
+  test('single-byte part pads the final block to 0x400 with 0xFF', () async {
     final tiny = FirmwarePart(offset: 0, bytes: [0xAB]);
     transport.md5Provider = (address, size) =>
         md5.convert(tiny.bytes).toString();
@@ -298,8 +299,9 @@ void main() {
     final begin = requestsOf(EspCommand.flashBegin).single;
     expect(begin.words, [1, 1, 0x400, 0, 0]);
     final block = requestsOf(EspCommand.flashData).single;
-    expect(block.words.sublist(0, 4), [4, 0, 0, 0]);
-    expect(block.data.sublist(16), [0xAB, 0xFF, 0xFF, 0xFF]);
-    expect(block.checksum, espChecksum([0xAB, 0xFF, 0xFF, 0xFF]));
+    expect(block.words.sublist(0, 4), [0x400, 0, 0, 0]);
+    final expected = [0xAB, ...List<int>.filled(0x3FF, 0xFF)];
+    expect(block.data.sublist(16), expected);
+    expect(block.checksum, espChecksum(expected));
   });
 }

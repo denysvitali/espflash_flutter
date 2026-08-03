@@ -214,12 +214,11 @@ final class EspFlasher {
     }
   }
 
-  /// Slice `[start, end)` of [bytes]; when it is the final, short
-  /// block, pad it to a 4-byte boundary with 0xFF (the erased flash
-  /// value). The prefix `len` and the checksum both cover the
-  /// transmitted, padded block, as the ROM verifies them; for parts
-  /// whose size is a multiple of 4 (every real firmware image) this
-  /// equals the checksum over the unpadded data.
+  /// Slice `[start, end)` of [bytes]; the final, short block is
+  /// padded to the full [blockSize] with 0xFF (the erased flash
+  /// value), per the declared wire format. The prefix `len` and the
+  /// checksum both cover the transmitted, padded block, as the ROM
+  /// verifies them.
   Uint8List _prepareBlock(
     Uint8List bytes,
     int start,
@@ -227,14 +226,14 @@ final class EspFlasher {
     int blockSize,
   ) {
     var block = bytes.sublist(start, end);
-    final padding = (4 - block.length % 4) % 4;
+    final padding = blockSize - block.length;
     if (padding != 0) {
       block = Uint8List.fromList([
         ...block,
         ...List<int>.filled(padding, 0xFF),
       ]);
     }
-    assert(block.length <= blockSize);
+    assert(block.length == blockSize);
     return block;
   }
 

@@ -1,9 +1,10 @@
 /// Chip detection: verify we are talking to an ESP32-C3 ROM before
 /// flashing anything.
 ///
-/// Primary path is the READ_REG chip-detect magic loop; the
-/// GET_SECURITY_INFO payload is the fallback (and also gates on
-/// flash encryption / secure download, which v1 refuses).
+/// Primary path is GET_SECURITY_INFO: it identifies the chip and is
+/// also the security gate (flash encryption / secure download are
+/// refused in v1). When the command is unsupported, the READ_REG
+/// chip-detect magic loop is the fallback.
 library;
 
 import 'connection.dart';
@@ -39,22 +40,23 @@ const Map<int, String> knownChipMagics = {
 /// [EspUnsupportedChipError] for anything else (including encrypted
 /// or secure-boot chips, which v1 refuses to flash).
 Future<ChipTarget> detectChip(EspConnection connection) async {
-  // Primary: READ_REG magic loop at the chip detect register.
-  final byMagic = await _detectByMagic(connection);
-  if (byMagic != null) {
-    return byMagic;
+  // Primary: GET_SECURITY_INFO chip ID — also the security gate.
+  final bySecurityInfo = await _detectBySecurityInfo(connection);
+  if (bySecurityInfo != null) {
+    return bySecurityInfo;
   }
-  // Fallback: GET_SECURITY_INFO chip ID.
-  return _detectBySecurityInfo(connection);
+  // Fallback: READ_REG magic loop at the chip detect register.
+  return _detectByMagic(connection);
 }
 
-Future<ChipTarget?> _detectByMagic(EspConnection connection) async {
+Future<ChipTarget> _detectByMagic(EspConnection connection) async {
   final int magic;
   try {
     magic = await connection.readReg(Esp32C3.chipDetectMagicRegister);
-  } on EspError {
-    // Register read unsupported or failed; try the fallback path.
-    return null;
+  } on EspError catch (error) {
+    throw EspUnsupportedChipError(
+      'Unable to detect chip type: $error',
+    );
   }
   if (Esp32C3.detectMagics.contains(magic)) {
     return const Esp32C3();
@@ -73,17 +75,19 @@ Future<ChipTarget?> _detectByMagic(EspConnection connection) async {
   );
 }
 
-Future<ChipTarget> _detectBySecurityInfo(EspConnection connection) async {
+/// Returns null when GET_SECURITY_INFO is unsupported on this ROM
+/// (caller falls back to the magic loop). Security refusals and
+/// foreign chip IDs throw — they never fall back.
+Future<ChipTarget?> _detectBySecurityInfo(EspConnection connection) async {
   final EspResponse response;
   try {
     response = await connection.command(
       EspCommand.getSecurityInfo,
       description: 'get security info',
     );
-  } on EspError catch (error) {
-    throw EspUnsupportedChipError(
-      'Unable to detect chip type: $error',
-    );
+  } on EspError {
+    // Command unsupported or failed; try the magic fallback.
+    return null;
   }
   final body = response.body;
   if (body.length < 16) {

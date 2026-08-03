@@ -12,18 +12,38 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.example.espflash_flutter"
         minSdk = 24
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // No abiFilters: no native libs (mik3y usb-serial is pure Java),
+        // so the APK stays universal per the implementation plan.
+    }
 
-        // Force arm64-v8a only (mirrors happy_flutter): covers every modern
-        // phone; the USB host API needs OTG-capable hardware anyway.
-        ndk {
-            abiFilters.clear()
-            abiFilters.add("arm64-v8a")
+    flavorDimensions += "environment"
+
+    productFlavors {
+        create("development") {
+            dimension = "environment"
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            buildConfigField("String", "APP_ENV", "\"development\"")
+        }
+        create("preview") {
+            dimension = "environment"
+            applicationIdSuffix = ".preview"
+            versionNameSuffix = "-preview"
+            buildConfigField("String", "APP_ENV", "\"preview\"")
+        }
+        create("production") {
+            dimension = "environment"
+            buildConfigField("String", "APP_ENV", "\"production\"")
         }
     }
 
