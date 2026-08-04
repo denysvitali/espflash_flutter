@@ -12,9 +12,14 @@ void main() {
   testWidgets('App renders firmware, flash and log sections', (
     WidgetTester tester,
   ) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
     await tester.pumpWidget(const ProviderScope(child: EspflashApp()));
     await tester.pumpAndSettle();
 
+    expect(tester.takeException(), isNull);
     expect(find.text('espflash'), findsOneWidget);
     expect(find.text('Firmware'), findsOneWidget);
     expect(find.text('not connected'), findsOneWidget);

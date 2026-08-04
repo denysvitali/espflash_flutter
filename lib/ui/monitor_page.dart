@@ -1,5 +1,4 @@
-/// Serial monitor screen: stage an ELF, attach to the device's UART
-/// output, watch defmt frames decoded live (raw text passes through).
+/// A focused live console for serial and RTT output with defmt decoding.
 library;
 
 import 'package:flutter/material.dart';
@@ -7,12 +6,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../defmt/table.dart';
+import 'app_theme.dart';
+import 'app_widgets.dart';
 import 'device_bar.dart';
 import 'device_session.dart';
 import 'monitor_controller.dart';
 import 'monitor_state.dart';
 
-/// Serial monitor with defmt decoding.
 class MonitorPage extends ConsumerStatefulWidget {
   const MonitorPage({super.key});
 
@@ -49,27 +49,151 @@ class _MonitorPageState extends ConsumerState<MonitorPage> {
       });
     });
 
+    final streaming = state.phase == MonitorPhase.streaming;
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Serial monitor')),
-      body: Column(
-        children: <Widget>[
+      appBar: AppBar(
+        toolbarHeight: 68,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Text('Serial monitor'),
+            Text(
+              streaming
+                  ? 'Live ${state.source?.toUpperCase()} output'
+                  : 'Inspect live device logs',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ],
+        ),
+        actions: <Widget>[
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            padding: const EdgeInsets.only(right: 16),
+            child: StatusPill(
+              label: streaming ? 'Live' : 'Stopped',
+              icon: streaming ? Icons.circle : Icons.stop_circle_outlined,
+              color: streaming ? scheme.primary : scheme.outline,
+            ),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        top: false,
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final logHeight = (constraints.maxHeight * .48).clamp(300.0, 560.0);
+            return CustomScrollView(
+              slivers: <Widget>[
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(14),
+                            child: const DeviceBar(showHeading: false),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        _FirmwareTile(state: state, controller: controller),
+                        const SizedBox(height: 10),
+                        _StreamControls(state: state, controller: controller),
+                        const SizedBox(height: 10),
+                        _FilterBar(state: state, controller: controller),
+                        if (state.statusBanner != null) ...<Widget>[
+                          const SizedBox(height: 10),
+                          AppBanner(
+                            message: state.statusBanner!,
+                            isError: state.bannerIsError,
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: logHeight,
+                    child: _LogView(state: state, scroll: _logScroll),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _FirmwareTile extends StatelessWidget {
+  const _FirmwareTile({required this.state, required this.controller});
+
+  final MonitorState state;
+  final MonitorController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final elf = state.elf;
+    final locked = state.phase != MonitorPhase.idle;
+    final scheme = Theme.of(context).colorScheme;
+    if (elf == null) {
+      return OutlinedButton.icon(
+        onPressed: locked ? null : controller.pickElf,
+        icon: const Icon(Icons.note_add_outlined),
+        label: const Text('Pick ELF or .tar.gz bundle'),
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: .45),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: scheme.primary.withValues(alpha: .15)),
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: scheme.primary.withValues(alpha: .12),
+              borderRadius: BorderRadius.circular(11),
+            ),
+            child: Icon(Icons.description_outlined, color: scheme.primary),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                const DeviceBar(),
-                const SizedBox(height: 8),
-                _ControlsBar(state: state, controller: controller),
-                if (state.statusBanner != null) ...<Widget>[
-                  const SizedBox(height: 8),
-                  _Banner(state: state),
-                ],
+                Text(
+                  elf.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelLarge,
+                ),
+                Text(
+                  '${elf.entryCount} log strings • defmt v${elf.version}'
+                  '${elf.hasTimestamp ? '' : ' • no timestamps'}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
               ],
             ),
           ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: _LogView(state: state, scroll: _logScroll),
+          IconButton(
+            tooltip: 'Remove ELF',
+            onPressed: locked ? null : controller.clearElf,
+            icon: const Icon(Icons.close_rounded),
           ),
         ],
       ),
@@ -77,218 +201,195 @@ class _MonitorPageState extends ConsumerState<MonitorPage> {
   }
 }
 
-class _ControlsBar extends ConsumerWidget {
-  const _ControlsBar({required this.state, required this.controller});
+class _StreamControls extends ConsumerWidget {
+  const _StreamControls({required this.state, required this.controller});
 
   final MonitorState state;
   final MonitorController controller;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final elf = state.elf;
     final streaming = state.phase == MonitorPhase.streaming;
+    final connecting = state.phase == MonitorPhase.connecting;
     final connected = ref.watch(deviceSessionProvider).isConnected;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Row(
       children: <Widget>[
-        // Firmware picker gets its own full-width row: sharing one row
-        // with the action icons left it a few pixels wide, which wrapped
-        // the label one letter per line.
-        if (elf != null)
-          Align(
-            alignment: Alignment.centerLeft,
-            child: InputChip(
-              avatar: const Icon(Icons.description_outlined, size: 18),
-              label: Text(
-                '${elf.name} — ${elf.entryCount} strings, '
-                'defmt v${elf.version}'
-                '${elf.hasTimestamp ? '' : ' (no timestamp)'}',
-                overflow: TextOverflow.ellipsis,
-              ),
-              onDeleted: streaming ? null : controller.clearElf,
+        Expanded(
+          child: FilledButton.icon(
+            onPressed: connected && !connecting ? controller.connect : null,
+            icon: connecting
+                ? const SizedBox.square(
+                    dimension: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    streaming ? Icons.stop_rounded : Icons.play_arrow_rounded,
+                  ),
+            label: Text(
+              connecting
+                  ? 'Starting…'
+                  : streaming
+                  ? 'Stop monitoring'
+                  : 'Start monitoring',
             ),
-          )
-        else
-          FilledButton.tonalIcon(
-            onPressed: controller.pickElf,
-            icon: const Icon(Icons.folder_open),
-            label: const Text('Pick ELF or .tar.gz bundle'),
           ),
+        ),
+        const SizedBox(width: 8),
+        IconButton.filledTonal(
+          icon: Icon(
+            state.paused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+          ),
+          tooltip: state.paused ? 'Resume output' : 'Pause output',
+          onPressed: streaming ? controller.togglePause : null,
+        ),
+        const SizedBox(width: 4),
+        IconButton.filledTonal(
+          icon: const Icon(Icons.restart_alt_rounded),
+          tooltip: 'Restart device',
+          onPressed: streaming ? controller.resetChip : null,
+        ),
+        _MoreMenu(state: state, controller: controller),
+      ],
+    );
+  }
+}
+
+class _MoreMenu extends StatelessWidget {
+  const _MoreMenu({required this.state, required this.controller});
+
+  final MonitorState state;
+  final MonitorController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: 'More console actions',
+      icon: const Icon(Icons.more_horiz_rounded),
+      onSelected: (String action) {
+        switch (action) {
+          case 'hex':
+            controller.toggleHexMode();
+          case 'copy':
+            Clipboard.setData(ClipboardData(text: controller.copyableLog()));
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('Logs copied')));
+          case 'clear':
+            controller.clearLog();
+        }
+      },
+      itemBuilder: (_) => <PopupMenuEntry<String>>[
+        CheckedPopupMenuItem<String>(
+          value: 'hex',
+          checked: state.hexMode,
+          child: const Text('Show hexadecimal'),
+        ),
+        PopupMenuItem<String>(
+          value: 'copy',
+          enabled: state.lines.isNotEmpty,
+          child: const Text('Copy all output'),
+        ),
+        PopupMenuItem<String>(
+          value: 'clear',
+          enabled: state.lines.isNotEmpty,
+          child: const Text('Clear output'),
+        ),
+      ],
+    );
+  }
+}
+
+class _FilterBar extends StatelessWidget {
+  const _FilterBar({required this.state, required this.controller});
+
+  final MonitorState state;
+  final MonitorController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final streaming = state.phase == MonitorPhase.streaming;
+    return Column(
+      children: <Widget>[
+        TextField(
+          decoration: const InputDecoration(
+            isDense: true,
+            hintText: 'Search output',
+            prefixIcon: Icon(Icons.search_rounded),
+          ),
+          onChanged: controller.setFilter,
+        ),
         const SizedBox(height: 8),
         Row(
           children: <Widget>[
-            FilledButton.icon(
-              onPressed: connected ? controller.connect : null,
-              icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
-              label: Text(streaming ? 'Stop' : 'Start'),
-            ),
-            const SizedBox(width: 4),
-            IconButton(
-              icon: Icon(state.paused ? Icons.play_circle : Icons.pause_circle),
-              tooltip: state.paused ? 'Resume' : 'Pause',
-              onPressed: controller.togglePause,
-            ),
-            IconButton(
-              icon: const Icon(Icons.restart_alt),
-              tooltip: 'Reset chip',
-              onPressed: streaming ? controller.resetChip : null,
-            ),
-            const Spacer(),
-            // Secondary actions live in an overflow menu so the row can
-            // never run out of width.
-            PopupMenuButton<String>(
-              tooltip: 'More actions',
-              onSelected: (String action) {
-                switch (action) {
-                  case 'hex':
-                    controller.toggleHexMode();
-                  case 'copy':
-                    Clipboard.setData(
-                      ClipboardData(text: controller.copyableLog()),
-                    );
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Logs copied to clipboard'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  case 'clear':
-                    controller.clearLog();
-                }
-              },
-              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
-                CheckedPopupMenuItem<String>(
-                  value: 'hex',
-                  checked: state.hexMode,
-                  child: const Text('Hex dump'),
-                ),
-                PopupMenuItem<String>(
-                  value: 'copy',
-                  enabled: state.lines.isNotEmpty,
-                  child: const Text('Copy all logs'),
-                ),
-                PopupMenuItem<String>(
-                  value: 'clear',
-                  enabled: state.lines.isNotEmpty,
-                  child: const Text('Clear log'),
-                ),
-              ],
-            ),
-          ],
-        ),
-        Row(
-          children: <Widget>[
             Expanded(
-              child: TextField(
+              child: DropdownButtonFormField<MonitorSource>(
+                key: ValueKey<MonitorSource>(state.preferredSource),
+                isExpanded: true,
+                initialValue: state.preferredSource,
                 decoration: const InputDecoration(
                   isDense: true,
-                  border: OutlineInputBorder(),
-                  labelText: 'Filter',
-                  prefixIcon: Icon(Icons.filter_alt_outlined, size: 18),
+                  labelText: 'Source',
                 ),
-                onChanged: controller.setFilter,
-              ),
-            ),
-            const SizedBox(width: 8),
-            // Flexible, not fixed: at large system text sizes these
-            // dropdowns grow and would otherwise overflow the row.
-            Flexible(
-              child: DropdownButton<MonitorSource>(
-                isExpanded: true,
-                value: state.preferredSource,
-                underline: const SizedBox.shrink(),
                 onChanged: streaming
                     ? null
-                    : (MonitorSource? source) {
-                        if (source != null) {
-                          controller.setSource(source);
-                        }
+                    : (MonitorSource? value) {
+                        if (value != null) controller.setSource(value);
                       },
                 items: const <DropdownMenuItem<MonitorSource>>[
-                  DropdownMenuItem<MonitorSource>(
+                  DropdownMenuItem(
                     value: MonitorSource.auto,
-                    child: Text('Auto'),
+                    child: Text('Automatic'),
                   ),
-                  DropdownMenuItem<MonitorSource>(
+                  DropdownMenuItem(
                     value: MonitorSource.serial,
                     child: Text('Serial'),
                   ),
-                  DropdownMenuItem<MonitorSource>(
+                  DropdownMenuItem(
                     value: MonitorSource.rtt,
                     child: Text('RTT'),
                   ),
                 ],
               ),
             ),
-            const SizedBox(width: 4),
-            Flexible(
-              child: DropdownButton<DefmtLevel?>(
+            const SizedBox(width: 8),
+            Expanded(
+              child: DropdownButtonFormField<DefmtLevel?>(
+                key: ValueKey<DefmtLevel?>(state.minLevel),
                 isExpanded: true,
-                hint: const Text('All'),
-                value: state.minLevel,
-                underline: const SizedBox.shrink(),
+                initialValue: state.minLevel,
+                decoration: const InputDecoration(
+                  isDense: true,
+                  labelText: 'Log level',
+                ),
+                onChanged: controller.setMinLevel,
                 items: const <DropdownMenuItem<DefmtLevel?>>[
-                  DropdownMenuItem<DefmtLevel?>(child: Text('All')),
-                  DropdownMenuItem<DefmtLevel?>(
+                  DropdownMenuItem(child: Text('All levels')),
+                  DropdownMenuItem(
                     value: DefmtLevel.trace,
-                    child: Text('≥ trace'),
+                    child: Text('Trace+'),
                   ),
-                  DropdownMenuItem<DefmtLevel?>(
+                  DropdownMenuItem(
                     value: DefmtLevel.debug,
-                    child: Text('≥ debug'),
+                    child: Text('Debug+'),
                   ),
-                  DropdownMenuItem<DefmtLevel?>(
+                  DropdownMenuItem(
                     value: DefmtLevel.info,
-                    child: Text('≥ info'),
+                    child: Text('Info+'),
                   ),
-                  DropdownMenuItem<DefmtLevel?>(
+                  DropdownMenuItem(
                     value: DefmtLevel.warn,
-                    child: Text('≥ warn'),
+                    child: Text('Warnings+'),
                   ),
-                  DropdownMenuItem<DefmtLevel?>(
+                  DropdownMenuItem(
                     value: DefmtLevel.error,
-                    child: Text('error'),
+                    child: Text('Errors only'),
                   ),
                 ],
-                onChanged: controller.setMinLevel,
               ),
             ),
           ],
         ),
-        if (state.phase == MonitorPhase.streaming)
-          Align(
-            alignment: Alignment.centerRight,
-            child: Text(
-              _byteCounterLabel(state),
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: state.droppedFrames > 0
-                    ? Theme.of(context).colorScheme.error
-                    : Theme.of(context).colorScheme.outline,
-              ),
-            ),
-          ),
       ],
-    );
-  }
-}
-
-class _Banner extends StatelessWidget {
-  const _Banner({required this.state});
-
-  final MonitorState state;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: state.bannerIsError
-            ? Theme.of(context).colorScheme.errorContainer
-            : Theme.of(context).colorScheme.primaryContainer,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Text(state.statusBanner!),
     );
   }
 }
@@ -304,69 +405,176 @@ class _LogView extends StatelessWidget {
     final lines = state.visibleLines;
     return Container(
       margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      clipBehavior: Clip.antiAlias,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
+        color: AppTheme.console,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x1A000000),
+            blurRadius: 20,
+            offset: Offset(0, 8),
+          ),
+        ],
       ),
-      child: lines.isEmpty
-          ? Center(
-              child: Text(
-                state.phase == MonitorPhase.streaming
-                    ? 'Listening via '
-                          '${state.source == 'rtt' ? 'RTT' : 'serial'}'
-                          '… (${state.bytesReceived} bytes)\n'
-                          'Nothing yet? Tap reset to reboot the chip.'
-                    : 'Connect the device above, then press Start.\n'
-                          'Pick the ELF (or .tar.gz bundle) to decode defmt.',
-                textAlign: TextAlign.center,
-              ),
-            )
-          : SelectionArea(
-              child: ListView.builder(
-                controller: scroll,
-                padding: const EdgeInsets.all(8),
-                itemCount: lines.length,
-                itemBuilder: (BuildContext context, int index) {
-                  final line = lines[index];
-                  return Text(
-                    _render(line),
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontFamily: 'monospace',
-                      color: _lineColor(context, line),
+      child: Column(
+        children: <Widget>[
+          _ConsoleHeader(state: state, visibleCount: lines.length),
+          const Divider(height: 1, color: Color(0xFF28363B)),
+          Expanded(
+            child: lines.isEmpty
+                ? _ConsoleEmptyState(state: state)
+                : SelectionArea(
+                    child: ListView.builder(
+                      controller: scroll,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      itemCount: lines.length,
+                      itemBuilder: (BuildContext context, int index) {
+                        final line = lines[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 3),
+                          child: Text(
+                            _render(line),
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 12.5,
+                              height: 1.42,
+                              color: Color(0xFFD6E2E5),
+                            ).copyWith(color: _lineColor(line)),
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
-            ),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 
   String _render(MonitorLine line) {
-    // Firmware may declare `defmt::timestamp!("")`, which decodes
-        // to an empty string — render no brackets rather than "[]".
-        final stamp = line.timestamp;
-        final ts = stamp == null || stamp.isEmpty ? '' : '[$stamp] ';
+    final stamp = line.timestamp;
+    final timestamp = stamp == null || stamp.isEmpty ? '' : '[$stamp] ';
     final level = line.level == null
         ? ''
         : '${line.level!.name.toUpperCase()} ';
-    return '$ts$level${line.text}';
+    return '$timestamp$level${line.text}';
   }
 
-  Color? _lineColor(BuildContext context, MonitorLine line) {
-    final scheme = Theme.of(context).colorScheme;
-    return switch (line.level) {
-      DefmtLevel.error => scheme.error,
-      DefmtLevel.warn => scheme.tertiary,
-      DefmtLevel.info => null,
-      DefmtLevel.debug => scheme.outline,
-      DefmtLevel.trace => scheme.outlineVariant,
-      null => line.isRaw ? scheme.outline : null,
-    };
+  Color _lineColor(MonitorLine line) => switch (line.level) {
+    DefmtLevel.error => const Color(0xFFFF858D),
+    DefmtLevel.warn => const Color(0xFFFFC66D),
+    DefmtLevel.info => const Color(0xFFD6E2E5),
+    DefmtLevel.debug => const Color(0xFF9DB2B8),
+    DefmtLevel.trace => const Color(0xFF758A91),
+    null => line.isRaw ? const Color(0xFF9DB2B8) : const Color(0xFFD6E2E5),
+  };
+}
+
+class _ConsoleHeader extends StatelessWidget {
+  const _ConsoleHeader({required this.state, required this.visibleCount});
+
+  final MonitorState state;
+  final int visibleCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: <Widget>[
+          const Icon(
+            Icons.terminal_rounded,
+            color: Color(0xFF8EA3A9),
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          const Text(
+            'OUTPUT',
+            style: TextStyle(
+              color: Color(0xFFB9C9CD),
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.1,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            state.phase == MonitorPhase.streaming
+                ? _byteCounterLabel(state)
+                : '$visibleCount lines',
+            style: TextStyle(
+              color: state.droppedFrames > 0
+                  ? const Color(0xFFFF858D)
+                  : const Color(0xFF8EA3A9),
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConsoleEmptyState extends StatelessWidget {
+  const _ConsoleEmptyState({required this.state});
+
+  final MonitorState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final streaming = state.phase == MonitorPhase.streaming;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              streaming ? Icons.graphic_eq_rounded : Icons.terminal_rounded,
+              size: 30,
+              color: const Color(0xFF758A91),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              streaming ? 'Waiting for device output…' : 'Ready when you are',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFFD6E2E5),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              streaming
+                  ? 'The console is listening. Restart the device if it '
+                        'stays quiet.'
+                  : 'Connect a device, then tap Start monitoring.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Color(0xFF8EA3A9),
+                fontSize: 12,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
 String _byteCounterLabel(MonitorState state) {
-  final dropped = state.droppedFrames;
-  return '${state.bytesReceived} B'
-      '${dropped > 0 ? ', $dropped dropped' : ''}';
+  return '${_formatBytes(state.bytesReceived)}'
+      '${state.droppedFrames > 0 ? ' • ${state.droppedFrames} dropped' : ''}';
+}
+
+String _formatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
 }
