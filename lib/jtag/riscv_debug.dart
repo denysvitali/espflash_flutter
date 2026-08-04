@@ -175,7 +175,13 @@ final class RiscvDtm {
       );
     }
     _attached = true;
+    diagnostics = 'dmstatus=0x${dmstatus.toRadixString(16)} '
+        'sbcs=0x${sbcs.toRadixString(16)} idle=${_tap.idleCycles}';
   }
+
+  /// Debug-module identity captured by [attach]; shown when RTT
+  /// discovery fails so one report pins down the failing layer.
+  String diagnostics = '';
 
   /// Reset the whole system through the debug module (`ndmreset`) and
   /// let the CPU run again. Unlike the ROM-bootloader dance this works

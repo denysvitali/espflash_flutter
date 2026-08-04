@@ -159,8 +159,18 @@ Future<RttControlBlock> readControlBlock(TargetMemory mem, int address) async {
   }
   for (var i = 0; i < _rttSignature.length; i++) {
     if (idBytes[i] != _rttSignature[i]) {
+      // Include what we actually read: all-zero means the debug module
+      // never left reset (or the block is not in RAM yet), whereas
+      // plausible-looking bytes point at a wrong address or a bad
+      // memory-access sequence.
+      final hex = idBytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join(' ');
+      final allZero = idBytes.every((b) => b == 0);
       throw RttError(
-        'no "SEGGER RTT" signature at 0x${address.toRadixString(16)}',
+        'no "SEGGER RTT" signature at 0x${address.toRadixString(16)} — '
+        'read [$hex]'
+        '${allZero ? ' (all zero: memory reads are not reaching the target)' : ''}',
       );
     }
   }

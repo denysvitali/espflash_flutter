@@ -258,8 +258,12 @@ final class MonitorController extends Notifier<MonitorState> {
         (_) => unawaited(_pollRtt()),
       );
     } on Object catch (error) {
+      final details = _dtm?.diagnostics ?? '';
       await _teardown();
-      _banner('$error', isError: true);
+      _banner(
+        '$error${details.isEmpty ? '' : ' [$details]'}',
+        isError: true,
+      );
     }
   }
 
