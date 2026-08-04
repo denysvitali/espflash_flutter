@@ -27,14 +27,6 @@ Current limits (v1): ROM-only flashing without a stub loader (~1 KB
 blocks, roughly 15–20 KB/s), ESP32-C3 only. Stub support (16 KB blocks)
 is planned for v2.
 
-## Launcher icon
-
-Masters are SVG: `assets/icon/app_icon.svg` (legacy), `app_icon_foreground.svg`
-(adaptive), `app_icon_monochrome.svg` (Android 13 themed). PNGs are **not**
-committed — `scripts/generate-icons.sh` renders them into `res/mipmap-*`
-during CI builds and via `make icons` (needs `rsvg-convert`, `resvg`,
-`inkscape`, or `magick` locally).
-
 ## Features
 
 - Pick a firmware `.bin` locally or download it from a URL
@@ -78,6 +70,14 @@ make build-dev       # = flutter build apk --debug --flavor development
 Requires an Android SDK (`local.properties` → `sdk.dir`); CI builds
 APKs on every push (see `.github/workflows/ci.yml`) and publishes a
 GitHub release for every commit on `main`.
+
+### Launcher icon
+
+Masters are SVG: `assets/icon/app_icon.svg` (legacy), `app_icon_foreground.svg`
+(adaptive), `app_icon_monochrome.svg` (Android 13 themed). PNGs are **not**
+committed — `scripts/generate-icons.sh` renders them into `res/mipmap-*`
+during CI builds and via `make icons` (needs `rsvg-convert`, `resvg`,
+`inkscape`, or `magick` locally).
 
 ### Release signing (one-time)
 
