@@ -6,6 +6,7 @@
 /// (RISC-V ESP32-C3 and friends are ELF32 LE).
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 /// One ELF section header.
@@ -144,7 +145,13 @@ final class ElfFile {
       while (end < bytes.length && bytes[end] != 0) {
         end++;
       }
-      return String.fromCharCodes(bytes, start, end);
+      // UTF-8, not code units: defmt format strings live in symbol
+      // names and routinely contain non-ASCII (emoji, arrows, ×).
+      // Decoding per byte turns "⚡" into "â¡".
+      return utf8.decode(
+        Uint8List.sublistView(bytes, start, end),
+        allowMalformed: true,
+      );
     }
 
     int shInt(int index, int fieldOffset) {

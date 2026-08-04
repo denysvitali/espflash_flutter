@@ -170,6 +170,29 @@ void main() {
     expect(table.lookup(16)!.level, isNull); // println → no level
   });
 
+  test('format strings with non-ASCII survive (UTF-8, not Latin-1)', () {
+    // Symbol names hold the format string; decoding per byte turned
+    // "⚡" into "â¡" in real firmware logs.
+    final utf8Elf = buildTestElf([
+      (defmtSymbol('defmt_timestamp', ''), 2),
+      (defmtSymbol('defmt_info', '[⚡ PWR] {=u8}× ready — ok'), 4),
+    ]);
+    final table = DefmtTable.parse(ElfFile.parse(utf8Elf))!;
+    final decoded = DefmtFrameDecoder(table).decode(frame(4, [3]));
+    expect(decoded.text, '[⚡ PWR] 3× ready — ok');
+  });
+
+  test('empty timestamp format decodes to an empty stamp', () {
+    final tsElf = buildTestElf([
+      (defmtSymbol('defmt_timestamp', ''), 2),
+      (defmtSymbol('defmt_info', 'hi'), 4),
+    ]);
+    final table = DefmtTable.parse(ElfFile.parse(tsElf))!;
+    final decoded = DefmtFrameDecoder(table).decode(frame(4, const <int>[]));
+    expect(decoded.timestamp, isEmpty);
+    expect(decoded.text, 'hi');
+  });
+
   test('rejects non-ELF bytes', () {
     expect(() => ElfFile.parse(Uint8List.fromList('nope'.codeUnits)),
         throwsFormatException);

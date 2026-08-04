@@ -342,7 +342,10 @@ class _LogView extends StatelessWidget {
   }
 
   String _render(MonitorLine line) {
-    final ts = line.timestamp == null ? '' : '[${line.timestamp}] ';
+    // Firmware may declare `defmt::timestamp!("")`, which decodes
+        // to an empty string — render no brackets rather than "[]".
+        final stamp = line.timestamp;
+        final ts = stamp == null || stamp.isEmpty ? '' : '[$stamp] ';
     final level = line.level == null
         ? ''
         : '${line.level!.name.toUpperCase()} ';
