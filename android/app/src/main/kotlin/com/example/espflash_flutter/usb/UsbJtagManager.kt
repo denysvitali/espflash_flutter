@@ -189,9 +189,15 @@ class UsbJtagManager(private val context: Context) {
                 val conn = connection
                     ?: throw UsbException("notOpen", "JTAG not open")
                 val ep = epIn ?: throw UsbException("notOpen", "JTAG not open")
-                val buffer = ByteArray(minOf(maxLen, IN_EP_BUFFER_SIZE))
+                // The read buffer must be at least one max-packet long:
+                // a shorter buffer makes the controller fail the transfer
+                // (overflow) instead of returning a short packet, which
+                // shows up as a capture-data timeout further up.
+                val size = maxOf(ep.maxPacketSize, IN_EP_BUFFER_SIZE)
+                val buffer = ByteArray(size)
                 val n = conn.bulkTransfer(ep, buffer, buffer.size, timeoutMs)
-                val bytes = if (n > 0) buffer.copyOf(n) else ByteArray(0)
+                val take = if (n > 0) minOf(n, maxLen) else 0
+                val bytes = if (take > 0) buffer.copyOf(take) else ByteArray(0)
                 mainHandler.post { result.success(bytes) }
             } catch (e: UsbException) {
                 mainHandler.post { result.error(e.code, e.message, null) }

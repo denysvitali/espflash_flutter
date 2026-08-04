@@ -2,7 +2,6 @@
 library;
 
 import '../defmt/table.dart';
-import '../usb/usb_device.dart';
 
 /// Connection/streaming phase of the monitor.
 enum MonitorPhase { idle, connecting, streaming }
@@ -56,8 +55,6 @@ final class ElfInfo {
 
 final class MonitorState {
   const MonitorState({
-    this.devices = const <UsbDevice>[],
-    this.selectedDeviceId,
     this.phase = MonitorPhase.idle,
     this.source,
     this.preferredSource = MonitorSource.auto,
@@ -73,8 +70,6 @@ final class MonitorState {
     this.bannerIsError = false,
   });
 
-  final List<UsbDevice> devices;
-  final String? selectedDeviceId;
   final MonitorPhase phase;
 
   /// 'serial' or 'rtt' while streaming; null when idle.
@@ -103,15 +98,6 @@ final class MonitorState {
   final String? statusBanner;
   final bool bannerIsError;
 
-  UsbDevice? get selectedDevice {
-    for (final device in devices) {
-      if (device.deviceId == selectedDeviceId) {
-        return device;
-      }
-    }
-    return null;
-  }
-
   /// [lines] with filter and minimum level applied.
   List<MonitorLine> get visibleLines {
     final needle = filter.trim().toLowerCase();
@@ -129,8 +115,6 @@ final class MonitorState {
   }
 
   MonitorState copyWith({
-    List<UsbDevice>? devices,
-    String? Function()? selectedDeviceId,
     MonitorPhase? phase,
     String? Function()? source,
     MonitorSource? preferredSource,
@@ -146,10 +130,6 @@ final class MonitorState {
     bool? bannerIsError,
   }) {
     return MonitorState(
-      devices: devices ?? this.devices,
-      selectedDeviceId: selectedDeviceId != null
-          ? selectedDeviceId()
-          : this.selectedDeviceId,
       phase: phase ?? this.phase,
       source: source != null ? source() : this.source,
       preferredSource: preferredSource ?? this.preferredSource,

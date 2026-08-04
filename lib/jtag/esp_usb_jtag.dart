@@ -135,6 +135,7 @@ final class EspUsbJtag {
   }
 
   Future<void> _receiveUntilDrained() async {
+    var emptyReads = 0;
     while (_pendingInBits > 0) {
       final want = (_pendingInBits + 7) ~/ 8;
       final chunk = await _wire.read(
@@ -142,8 +143,16 @@ final class EspUsbJtag {
         const Duration(milliseconds: 500),
       );
       if (chunk.isEmpty) {
-        throw const JtagProtocolError('timeout reading capture data');
+        // The device answers only once it has executed the queued
+        // commands; a few short reads while it catches up are normal.
+        if (++emptyReads > 8) {
+          throw JtagProtocolError(
+            'timeout reading capture data ($_pendingInBits bits pending)',
+          );
+        }
+        continue;
       }
+      emptyReads = 0;
       final bitsHere =
           _pendingInBits < chunk.length * 8 ? _pendingInBits : chunk.length * 8;
       for (var i = 0; i < bitsHere; i++) {

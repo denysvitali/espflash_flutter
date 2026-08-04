@@ -1,5 +1,9 @@
-/// Orchestration behind the flash screen: USB permission, bootloader
-/// sync, chip detect, firmware staging (file / URL), flash, cancel.
+/// Orchestration behind the flash screen: firmware staging (file, URL or
+/// build bundle), bootloader entry, flash, cancel.
+///
+/// Device selection, USB permission and the open port belong to
+/// [DeviceSession] — the app connects once, and this screen uses that
+/// connection.
 library;
 
 import 'dart:async';
@@ -19,8 +23,8 @@ import '../esp/reset.dart';
 import '../esp/targets/chip_target.dart';
 import '../usb/android_usb_transport.dart';
 import '../usb/usb_device.dart';
-import '../usb/usb_events.dart';
 import '../usb/usb_service.dart';
+import 'device_session.dart';
 import 'flash_state.dart';
 
 /// Screen state + actions.
@@ -29,59 +33,22 @@ final flashControllerProvider = NotifierProvider<FlashController, FlashState>(
 );
 
 final class FlashController extends Notifier<FlashState> {
-  FlashController([UsbService? usb]) : _usb = usb ?? UsbService();
+  FlashController();
 
-  final UsbService _usb;
+  late final UsbService _usb = ref.read(deviceSessionProvider.notifier).usb;
   final Dio _dio = Dio();
 
-  StreamSubscription<UsbEvent>? _eventsSub;
-  Completer<bool>? _permissionWaiter;
   EspConnection? _connection;
   ChipTarget? _target;
   bool _cancelRequested = false;
 
   @override
   FlashState build() {
-    _eventsSub ??= _usb.events.listen(
-      _onUsbEvent,
-      onError: (Object _) {
-        // No USB host stack (desktop, tests): the refresh path
-        // reports it; nothing else to do here.
-      },
-    );
     ref.onDispose(() async {
-      await _eventsSub?.cancel();
-      await _teardownConnection();
+      await _closeConnection();
       await _screenOn(false);
     });
     return const FlashState();
-  }
-
-  /// Re-scan attached USB devices. Safe on platforms without the
-  /// plugin: logs instead of crashing.
-  Future<void> refreshDevices() async {
-    try {
-      final devices = await _usb.listDevices();
-      state = state.copyWith(
-        devices: devices,
-        selectedDeviceId: () {
-          final current = state.selectedDeviceId;
-          if (devices.any((d) => d.deviceId == current)) {
-            return current;
-          }
-          return devices.length == 1 ? devices.single.deviceId : null;
-        },
-      );
-      if (devices.isEmpty) {
-        _log('No USB devices found.');
-      }
-    } on Object catch (error) {
-      _log('USB not available: $error');
-    }
-  }
-
-  void selectDevice(String? deviceId) {
-    state = state.copyWith(selectedDeviceId: () => deviceId);
   }
 
   /// Ask the user to pick firmware: a raw `.bin`, or a `.tar.gz` build
@@ -192,57 +159,43 @@ final class FlashController extends Notifier<FlashState> {
   }
 
   /// Permission → open → sync → detect chip. Leaves the connection
-  /// open for [flash].
-  Future<void> connect() async {
-    final device = state.selectedDevice;
-    if (device == null || state.phase == FlashPhase.connecting) {
-      return;
-    }
-    state = state.copyWith(
-      phase: FlashPhase.connecting,
-      statusBanner: () => null,
+  /// Enter the ROM bootloader on the already-open port and identify the
+  /// chip.
+  ///
+  /// Called from [flash], not from connecting: download mode stops the
+  /// firmware, so a chip is only parked there for the moment it is
+  /// actually being written. The watchdog is disarmed straight away
+  /// because the ROM resets an idle bootloader within a minute.
+  Future<void> _enterBootloader(UsbDevice device) async {
+    _log('Entering the bootloader …');
+    final transport = AndroidUsbTransport(service: _usb, device: device);
+    final connection = EspConnection(transport);
+    _connection = connection;
+    await connection.connect(
+      resetStrategy:
+          device.isUsbJtag ? const UsbJtagReset() : const ClassicReset(),
     );
-    try {
-      await _ensurePermission(device);
-      final label = device.label.isEmpty ? device.deviceId : device.label;
-      _log('Opening $label …');
-      await _usb.open(device);
-      final transport = AndroidUsbTransport(service: _usb, device: device);
-      final connection = EspConnection(transport);
-      _connection = connection;
-      _log('Syncing with the bootloader …');
-      await connection.connect(
-        resetStrategy: device.isUsbJtag
-            ? const UsbJtagReset()
-            : const ClassicReset(),
-      );
-      final target = await detectChip(connection);
-      _target = target;
-      // The ROM's RTC watchdog resets an idle bootloader within a
-      // minute; disarm it before the user takes time to stage firmware.
-      await target.disableWatchdogs(connection);
-      _log('Detected ${target.chipName}. Ready to flash.');
-      state = state.copyWith(
-        phase: FlashPhase.ready,
-        chipName: () => target.chipName,
-      );
-    } on Object catch (error) {
-      _log('Connect failed: $error');
-      await _teardownConnection();
-      state = state.copyWith(phase: FlashPhase.idle);
-      _banner('$error', isError: true);
-    }
+    final target = await detectChip(connection);
+    _target = target;
+    await target.disableWatchdogs(connection);
+    _log('Detected ${target.chipName}.');
+    state = state.copyWith(chipName: () => target.chipName);
   }
 
   /// Write the staged firmware at [offset], verify MD5, reboot.
   Future<void> flash({required int offset, bool eraseFirst = false}) async {
     final firmware = state.firmware;
-    final connection = _connection;
-    final target = _target;
-    if (state.phase != FlashPhase.ready ||
+    final session = ref.read(deviceSessionProvider.notifier);
+    final device = ref.read(deviceSessionProvider).selectedDevice;
+    if (state.phase == FlashPhase.flashing ||
         firmware == null ||
-        connection == null ||
-        target == null) {
+        device == null ||
+        !ref.read(deviceSessionProvider).isConnected) {
+      return;
+    }
+    if (!session.claim(DeviceActivity.flashing)) {
+      _banner('The serial monitor is using the port — stop it first.',
+          isError: true);
       return;
     }
     _cancelRequested = false;
@@ -253,12 +206,15 @@ final class FlashController extends Notifier<FlashState> {
       statusBanner: () => null,
     );
     await _screenOn(true);
-    _log(
-      'Flashing ${firmware.name} at 0x${offset.toRadixString(16)} '
-      '(${firmware.bytes.length} bytes)…',
-    );
     var succeeded = false;
     try {
+      await _enterBootloader(device);
+      final connection = _connection!;
+      final target = _target!;
+      _log(
+        'Flashing ${firmware.name} at 0x${offset.toRadixString(16)} '
+        '(${firmware.bytes.length} bytes)…',
+      );
       await EspFlasher(connection, target).flash(
         <FirmwarePart>[
           FirmwarePart(
@@ -286,9 +242,11 @@ final class FlashController extends Notifier<FlashState> {
       _banner('Flash complete — device rebooted.');
     }
     await _screenOn(false);
-    // The chip has rebooted (or the ROM is in an unknown state after
-    // a failure); a fresh sync is required either way, so tear down.
-    await _teardownConnection();
+    // The chip left the bootloader (or the ROM is in an unknown state
+    // after a failure): drop the protocol layer, keep the port open so
+    // the monitor can watch the firmware boot.
+    await _closeConnection();
+    session.release(DeviceActivity.flashing);
     state = state.copyWith(
       phase: FlashPhase.idle,
       chipName: () => null,
@@ -305,63 +263,14 @@ final class FlashController extends Notifier<FlashState> {
     }
   }
 
-  /// Close the port and return to idle.
-  Future<void> disconnect() async {
-    await _teardownConnection();
-    state = state.copyWith(phase: FlashPhase.idle, chipName: () => null);
-    _log('Disconnected.');
-  }
-
-  Future<void> _ensurePermission(UsbDevice device) async {
-    if (await _usb.hasPermission(device)) {
-      return;
-    }
-    _log('Requesting USB permission …');
-    final waiter = Completer<bool>();
-    _permissionWaiter = waiter;
-    await _usb.requestPermission(device);
-    final granted = await waiter.future.timeout(
-      const Duration(seconds: 60),
-      onTimeout: () => false,
-    );
-    _permissionWaiter = null;
-    if (!granted) {
-      throw const EspPermissionDeniedError('USB permission denied by the user');
-    }
-    _log('USB permission granted.');
-  }
-
-  void _onUsbEvent(UsbEvent event) {
-    switch (event) {
-      case UsbPermissionGranted():
-        _permissionWaiter?.complete(true);
-      case UsbPermissionDenied():
-        _permissionWaiter?.complete(false);
-      case UsbDeviceAttached():
-        _log('Device attached: ${event.deviceId}');
-        unawaited(refreshDevices());
-      case UsbDeviceDetached():
-        _log('Device detached: ${event.deviceId}');
-        if (event.deviceId == state.selectedDeviceId) {
-          unawaited(_teardownConnection());
-          state = state.copyWith(phase: FlashPhase.idle, chipName: () => null);
-          _banner('Device unplugged.', isError: true);
-        }
-        unawaited(refreshDevices());
-    }
-  }
-
-  Future<void> _teardownConnection() async {
+  /// Drops the ROM-protocol layer. The port itself stays open — it
+  /// belongs to [DeviceSession], not to this screen.
+  Future<void> _closeConnection() async {
     final connection = _connection;
     _connection = null;
     _target = null;
     if (connection != null) {
       await connection.close();
-    }
-    try {
-      await _usb.close();
-    } on Object {
-      // Port already gone (device unplugged); nothing to close.
     }
   }
 

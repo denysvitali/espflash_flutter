@@ -5,7 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../usb/usb_device.dart';
+import 'device_bar.dart';
+import 'device_session.dart';
 import 'flash_controller.dart';
 import 'flash_state.dart';
 import 'monitor_page.dart';
@@ -30,7 +31,7 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(flashControllerProvider.notifier).refreshDevices();
+      ref.read(deviceSessionProvider.notifier).refreshDevices();
     });
   }
 
@@ -100,7 +101,9 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: <Widget>[
-          _DeviceCard(state: state, controller: controller),
+          const Card(
+            child: Padding(padding: EdgeInsets.all(16), child: DeviceBar()),
+          ),
           const SizedBox(height: 12),
           _FirmwareCard(
             state: state,
@@ -122,78 +125,6 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
           const SizedBox(height: 12),
           _LogCard(state: state, scrollController: _logScroll),
         ],
-      ),
-    );
-  }
-}
-
-class _DeviceCard extends StatelessWidget {
-  const _DeviceCard({required this.state, required this.controller});
-
-  final FlashState state;
-  final FlashController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final busy = state.phase == FlashPhase.connecting;
-    final connected = state.phase != FlashPhase.idle;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Text('Device', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    hint: Text(
-                      state.devices.isEmpty
-                          ? 'No USB devices — plug in an ESP32-C3'
-                          : 'Select USB device',
-                    ),
-                    value: state.selectedDeviceId,
-                    items: <DropdownMenuItem<String>>[
-                      for (final UsbDevice device in state.devices)
-                        DropdownMenuItem<String>(
-                          value: device.deviceId,
-                          child: Text(
-                            _deviceLabel(device),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                    ],
-                    onChanged: connected ? null : controller.selectDevice,
-                  ),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  tooltip: 'Rescan devices',
-                  onPressed: busy ? null : controller.refreshDevices,
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            if (busy)
-              const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(8),
-                  child: CircularProgressIndicator(),
-                ),
-              )
-            else
-              FilledButton.icon(
-                onPressed: state.selectedDevice == null
-                    ? null
-                    : (connected ? controller.disconnect : controller.connect),
-                icon: Icon(connected ? Icons.link_off : Icons.link),
-                label: Text(connected ? 'Disconnect' : 'Connect'),
-              ),
-          ],
-        ),
       ),
     );
   }
@@ -301,7 +232,7 @@ class _FirmwareCard extends StatelessWidget {
   }
 }
 
-class _FlashCard extends StatelessWidget {
+class _FlashCard extends ConsumerWidget {
   const _FlashCard({
     required this.state,
     required this.controller,
@@ -315,12 +246,10 @@ class _FlashCard extends StatelessWidget {
   final bool eraseFirst;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final flashing = state.phase == FlashPhase.flashing;
-    final canFlash =
-        state.phase == FlashPhase.ready &&
-        state.firmware != null &&
-        offset != null;
+    final connected = ref.watch(deviceSessionProvider).isConnected;
+    final canFlash = connected && state.firmware != null && offset != null;
     final banner = state.statusBanner;
     return Card(
       child: Padding(
@@ -356,13 +285,13 @@ class _FlashCard extends StatelessWidget {
                     : null,
                 icon: const Icon(Icons.bolt),
                 label: Text(
-                  state.phase == FlashPhase.ready
-                      ? (state.firmware == null
-                            ? 'Pick firmware first'
-                            : offset == null
-                            ? 'Enter a valid hex offset'
-                            : 'Flash')
-                      : 'Connect a device first',
+                  !connected
+                      ? 'Connect a device first'
+                      : state.firmware == null
+                      ? 'Pick firmware first'
+                      : offset == null
+                      ? 'Enter a valid hex offset'
+                      : 'Flash',
                 ),
               ),
             if (banner != null) ...<Widget>[
@@ -460,12 +389,6 @@ class _LogCard extends StatelessWidget {
   }
 }
 
-String _deviceLabel(UsbDevice device) {
-  final name = device.label.isEmpty ? 'USB serial' : device.label;
-  final vid = device.vendorId.toRadixString(16).padLeft(4, '0');
-  final pid = device.productId.toRadixString(16).padLeft(4, '0');
-  return '$name ($vid:$pid)';
-}
 
 String _formatBytes(int bytes) {
   if (bytes < 1024) {

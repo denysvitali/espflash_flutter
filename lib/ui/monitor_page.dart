@@ -7,7 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../defmt/table.dart';
-import '../usb/usb_device.dart';
+import 'device_bar.dart';
+import 'device_session.dart';
 import 'monitor_controller.dart';
 import 'monitor_state.dart';
 
@@ -26,7 +27,7 @@ class _MonitorPageState extends ConsumerState<MonitorPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(monitorControllerProvider.notifier).refreshDevices();
+      ref.read(deviceSessionProvider.notifier).refreshDevices();
     });
   }
 
@@ -56,7 +57,7 @@ class _MonitorPageState extends ConsumerState<MonitorPage> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: Column(
               children: <Widget>[
-                _TopBar(state: state, controller: controller),
+                const DeviceBar(),
                 const SizedBox(height: 8),
                 _ControlsBar(state: state, controller: controller),
                 if (state.statusBanner != null) ...<Widget>[
@@ -74,74 +75,17 @@ class _MonitorPageState extends ConsumerState<MonitorPage> {
   }
 }
 
-class _TopBar extends StatelessWidget {
-  const _TopBar({required this.state, required this.controller});
-
-  final MonitorState state;
-  final MonitorController controller;
-
-  @override
-  Widget build(BuildContext context) {
-    final streaming = state.phase == MonitorPhase.streaming;
-    final busy = state.phase == MonitorPhase.connecting;
-    return Row(
-      children: <Widget>[
-        Expanded(
-          child: DropdownButton<String>(
-            isExpanded: true,
-            hint: Text(
-              state.devices.isEmpty ? 'No USB devices' : 'Select USB device',
-            ),
-            value: state.selectedDeviceId,
-            items: <DropdownMenuItem<String>>[
-              for (final UsbDevice device in state.devices)
-                DropdownMenuItem<String>(
-                  value: device.deviceId,
-                  child: Text(
-                    _deviceLabel(device),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-            onChanged: streaming || busy ? null : controller.selectDevice,
-          ),
-        ),
-        IconButton(
-          icon: const Icon(Icons.refresh),
-          tooltip: 'Rescan devices',
-          onPressed: busy ? null : controller.refreshDevices,
-        ),
-        if (busy)
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          )
-        else
-          FilledButton.tonalIcon(
-            onPressed:
-                state.selectedDevice == null ? null : controller.connect,
-            icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
-            label: Text(streaming ? 'Stop' : 'Connect'),
-          ),
-      ],
-    );
-  }
-}
-
-class _ControlsBar extends StatelessWidget {
+class _ControlsBar extends ConsumerWidget {
   const _ControlsBar({required this.state, required this.controller});
 
   final MonitorState state;
   final MonitorController controller;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final elf = state.elf;
     final streaming = state.phase == MonitorPhase.streaming;
+    final connected = ref.watch(deviceSessionProvider).isConnected;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -169,6 +113,11 @@ class _ControlsBar extends StatelessWidget {
                 ),
               ),
             const SizedBox(width: 8),
+            IconButton.filledTonal(
+              icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
+              tooltip: streaming ? 'Stop logs' : 'Start logs',
+              onPressed: connected ? controller.connect : null,
+            ),
             IconButton(
               icon: const Icon(Icons.restart_alt),
               tooltip: 'Reset chip (reboot into firmware)',
@@ -345,8 +294,8 @@ class _LogView extends StatelessWidget {
                           '${state.source == 'rtt' ? 'RTT' : 'serial'}'
                           '… (${state.bytesReceived} bytes)\n'
                           'Nothing yet? Tap reset to reboot the chip.'
-                    : 'Pick an ELF, select a device, press Start.\n'
-                          'defmt-rtt firmware: use the RTT (bug) button.',
+                    : 'Connect the device above, then press Start.\n'
+                          'Pick the ELF (or .tar.gz bundle) to decode defmt.',
                 textAlign: TextAlign.center,
               ),
             )
@@ -391,12 +340,6 @@ class _LogView extends StatelessWidget {
   }
 }
 
-String _deviceLabel(UsbDevice device) {
-  final name = device.label.isEmpty ? 'USB serial' : device.label;
-  final vid = device.vendorId.toRadixString(16).padLeft(4, '0');
-  final pid = device.productId.toRadixString(16).padLeft(4, '0');
-  return '$name ($vid:$pid)';
-}
 
 String _byteCounterLabel(MonitorState state) {
   final dropped = state.droppedFrames;

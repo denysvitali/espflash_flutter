@@ -3,7 +3,6 @@ library;
 
 import 'dart:typed_data';
 
-import '../usb/usb_device.dart';
 
 /// Where the app is in the connect → flash lifecycle.
 enum FlashPhase {
@@ -41,8 +40,6 @@ final class FirmwareImage {
 /// Immutable view of the flash screen.
 final class FlashState {
   const FlashState({
-    this.devices = const <UsbDevice>[],
-    this.selectedDeviceId,
     this.phase = FlashPhase.idle,
     this.chipName,
     this.firmware,
@@ -53,12 +50,6 @@ final class FlashState {
     this.bannerIsError = false,
     this.log = const <String>[],
   });
-
-  /// Devices reported by the platform USB stack.
-  final List<UsbDevice> devices;
-
-  /// `deviceId` of the dropdown selection.
-  final String? selectedDeviceId;
 
   final FlashPhase phase;
 
@@ -85,21 +76,10 @@ final class FlashState {
   /// Monospace activity log, oldest first.
   final List<String> log;
 
-  UsbDevice? get selectedDevice {
-    for (final device in devices) {
-      if (device.deviceId == selectedDeviceId) {
-        return device;
-      }
-    }
-    return null;
-  }
-
   /// 0..1 progress of the current run; 0 when not flashing.
   double get progress => bytesTotal == 0 ? 0 : bytesWritten / bytesTotal;
 
   FlashState copyWith({
-    List<UsbDevice>? devices,
-    String? Function()? selectedDeviceId,
     FlashPhase? phase,
     String? Function()? chipName,
     FirmwareImage? Function()? firmware,
@@ -111,10 +91,6 @@ final class FlashState {
     List<String>? log,
   }) {
     return FlashState(
-      devices: devices ?? this.devices,
-      selectedDeviceId: selectedDeviceId != null
-          ? selectedDeviceId()
-          : this.selectedDeviceId,
       phase: phase ?? this.phase,
       chipName: chipName != null ? chipName() : this.chipName,
       firmware: firmware != null ? firmware() : this.firmware,

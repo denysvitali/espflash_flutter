@@ -12,7 +12,6 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../defmt/defmt.dart';
 import '../defmt/rzcobs_stream.dart';
-import '../esp/errors.dart';
 import '../esp/firmware_bundle.dart';
 import '../esp/reset.dart';
 import '../esp/transport.dart';
@@ -20,8 +19,8 @@ import '../jtag/esp_usb_jtag.dart';
 import '../jtag/riscv_debug.dart';
 import '../rtt/rtt.dart';
 import '../usb/usb_device.dart';
-import '../usb/usb_events.dart';
 import '../usb/usb_service.dart';
+import 'device_session.dart';
 import 'monitor_state.dart';
 
 /// Screen state + actions.
@@ -32,13 +31,13 @@ final monitorControllerProvider =
 const _maxLines = 5000;
 
 final class MonitorController extends Notifier<MonitorState> {
-  MonitorController([UsbService? usb]) : _usb = usb ?? UsbService();
+  MonitorController();
 
-  final UsbService _usb;
+  late final DeviceSession _session = ref.read(deviceSessionProvider.notifier);
+  late final UsbService _usb = _session.usb;
 
-  StreamSubscription<UsbEvent>? _eventsSub;
   StreamSubscription<Uint8List>? _dataSub;
-  Completer<bool>? _permissionWaiter;
+  StreamSubscription<void>? _lostSub;
   ElfFile? _elfFile;
   DefmtTable? _table;
   DefmtLogDecoder? _decoder;
@@ -58,46 +57,20 @@ final class MonitorController extends Notifier<MonitorState> {
 
   @override
   MonitorState build() {
-    _eventsSub ??= _usb.events.listen(
-      _onUsbEvent,
-      onError: (Object _) {
-        // No USB host stack (desktop, tests).
-      },
-    );
+    _lostSub ??= _session.onDeviceLost.listen((_) {
+      unawaited(_teardown());
+      _banner('Device unplugged.', isError: true);
+    });
     ref.onDispose(() async {
       await _dataSub?.cancel();
-      await _eventsSub?.cancel();
-      try {
-        await _usb.close();
-      } on Object {
-        // Port already gone.
-      }
+      await _lostSub?.cancel();
       await _screenOn(false);
     });
     return const MonitorState();
   }
 
-  Future<void> refreshDevices() async {
-    try {
-      final devices = await _usb.listDevices();
-      state = state.copyWith(
-        devices: devices,
-        selectedDeviceId: () {
-          final current = state.selectedDeviceId;
-          if (devices.any((d) => d.deviceId == current)) {
-            return current;
-          }
-          return devices.length == 1 ? devices.single.deviceId : null;
-        },
-      );
-    } on Object catch (error) {
-      _banner('USB not available: $error', isError: true);
-    }
-  }
-
-  void selectDevice(String? deviceId) {
-    state = state.copyWith(selectedDeviceId: () => deviceId);
-  }
+  /// The device the app is connected to, per [DeviceSession].
+  UsbDevice? get _device => ref.read(deviceSessionProvider).selectedDevice;
 
   /// Pick an ELF — or a `.tar.gz` firmware bundle, whose ELF is used.
   Future<void> pickElf() async {
@@ -179,8 +152,13 @@ final class MonitorController extends Notifier<MonitorState> {
       await stop();
       return;
     }
-    final device = state.selectedDevice;
-    if (device == null) {
+    final device = _device;
+    if (device == null || !ref.read(deviceSessionProvider).isConnected) {
+      _banner('Connect to the device first.', isError: true);
+      return;
+    }
+    if (!_session.claim(DeviceActivity.monitoring)) {
+      _banner('A flash is running — wait for it to finish.', isError: true);
       return;
     }
     final source = switch (state.preferredSource) {
@@ -193,6 +171,16 @@ final class MonitorController extends Notifier<MonitorState> {
     };
     if (source == MonitorSource.rtt) {
       await startRtt();
+      // Auto must never leave the user with nothing: if the JTAG path
+      // fails, fall back to the serial port and say so.
+      if (state.phase == MonitorPhase.idle &&
+          state.preferredSource == MonitorSource.auto) {
+        final why = state.statusBanner;
+        await start();
+        if (state.phase == MonitorPhase.streaming) {
+          _banner('RTT unavailable ($why) — showing serial output instead.');
+        }
+      }
     } else {
       await start();
     }
@@ -209,7 +197,7 @@ final class MonitorController extends Notifier<MonitorState> {
   /// Needs an ELF (defmt table + `_SEGGER_RTT` symbol) and a device on
   /// its native USB-Serial-JTAG port.
   Future<void> startRtt() async {
-    final device = state.selectedDevice;
+    final device = _device;
     final table = _table;
     if (device == null || state.phase != MonitorPhase.idle) {
       return;
@@ -232,7 +220,6 @@ final class MonitorController extends Notifier<MonitorState> {
       statusBanner: () => null,
     );
     try {
-      await _ensurePermission(device);
       await _usb.jtagOpen(device);
       final dtm = RiscvDtm(JtagTap(EspUsbJtag(_UsbJtagWire(_usb))));
       await dtm.init();
@@ -319,10 +306,10 @@ final class MonitorController extends Notifier<MonitorState> {
     }
   }
 
-  /// Permission → open → start streaming. No bootloader sync: the device
-  /// runs its normal firmware and we just listen.
+  /// Stream the serial port the session already opened. No bootloader
+  /// sync: the chip runs its firmware and we just listen.
   Future<void> start() async {
-    final device = state.selectedDevice;
+    final device = _device;
     if (device == null || state.phase != MonitorPhase.idle) {
       return;
     }
@@ -331,14 +318,6 @@ final class MonitorController extends Notifier<MonitorState> {
       statusBanner: () => null,
     );
     try {
-      await _ensurePermission(device);
-      // The flash screen may hold the port; make sure it's free.
-      try {
-        await _usb.close();
-      } on Object {
-        // Wasn't open.
-      }
-      await _usb.open(device);
       _rawPending.clear();
       _dataSub = _usb.data.listen(
         _onData,
@@ -375,7 +354,7 @@ final class MonitorController extends Notifier<MonitorState> {
   /// ROM bootloader and trigger an RTC watchdog reset instead (same as
   /// the flasher's post-flash reboot).
   Future<void> resetChip() async {
-    final device = state.selectedDevice;
+    final device = _device;
     if (state.phase != MonitorPhase.streaming || device == null) {
       return;
     }
@@ -530,40 +509,8 @@ final class MonitorController extends Notifier<MonitorState> {
     return MonitorLine(text: text, isRaw: true);
   }
 
-  Future<void> _ensurePermission(UsbDevice device) async {
-    if (await _usb.hasPermission(device)) {
-      return;
-    }
-    final waiter = Completer<bool>();
-    _permissionWaiter = waiter;
-    await _usb.requestPermission(device);
-    final granted = await waiter.future.timeout(
-      const Duration(seconds: 60),
-      onTimeout: () => false,
-    );
-    _permissionWaiter = null;
-    if (!granted) {
-      throw const EspPermissionDeniedError('USB permission denied by the user');
-    }
-  }
-
-  void _onUsbEvent(UsbEvent event) {
-    switch (event) {
-      case UsbPermissionGranted():
-        _permissionWaiter?.complete(true);
-      case UsbPermissionDenied():
-        _permissionWaiter?.complete(false);
-      case UsbDeviceAttached():
-        unawaited(refreshDevices());
-      case UsbDeviceDetached():
-        if (event.deviceId == state.selectedDeviceId) {
-          unawaited(_teardown());
-          _banner('Device unplugged.', isError: true);
-        }
-        unawaited(refreshDevices());
-    }
-  }
-
+  /// Stops streaming. The port stays open: it belongs to the session,
+  /// and the flash screen may want it next.
   Future<void> _teardown() async {
     _rttTimer?.cancel();
     _rttTimer = null;
@@ -577,12 +524,8 @@ final class MonitorController extends Notifier<MonitorState> {
     } on Object {
       // Not open / device gone.
     }
-    try {
-      await _usb.close();
-    } on Object {
-      // Port already gone.
-    }
     await _screenOn(false);
+    _session.release(DeviceActivity.monitoring);
     state = state.copyWith(phase: MonitorPhase.idle, source: () => null);
   }
 
