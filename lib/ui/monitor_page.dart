@@ -68,7 +68,9 @@ class _MonitorPageState extends ConsumerState<MonitorPage> {
             ),
           ),
           const SizedBox(height: 8),
-          Expanded(child: _LogView(state: state, scroll: _logScroll)),
+          Expanded(
+            child: _LogView(state: state, scroll: _logScroll),
+          ),
         ],
       ),
     );
@@ -154,24 +156,23 @@ class _ControlsBar extends ConsumerWidget {
                     controller.clearLog();
                 }
               },
-              itemBuilder: (BuildContext context) =>
-                  <PopupMenuEntry<String>>[
-                    CheckedPopupMenuItem<String>(
-                      value: 'hex',
-                      checked: state.hexMode,
-                      child: const Text('Hex dump'),
-                    ),
-                    PopupMenuItem<String>(
-                      value: 'copy',
-                      enabled: state.lines.isNotEmpty,
-                      child: const Text('Copy all logs'),
-                    ),
-                    PopupMenuItem<String>(
-                      value: 'clear',
-                      enabled: state.lines.isNotEmpty,
-                      child: const Text('Clear log'),
-                    ),
-                  ],
+              itemBuilder: (BuildContext context) => <PopupMenuEntry<String>>[
+                CheckedPopupMenuItem<String>(
+                  value: 'hex',
+                  checked: state.hexMode,
+                  child: const Text('Hex dump'),
+                ),
+                PopupMenuItem<String>(
+                  value: 'copy',
+                  enabled: state.lines.isNotEmpty,
+                  child: const Text('Copy all logs'),
+                ),
+                PopupMenuItem<String>(
+                  value: 'clear',
+                  enabled: state.lines.isNotEmpty,
+                  child: const Text('Clear log'),
+                ),
+              ],
             ),
           ],
         ),
@@ -189,62 +190,68 @@ class _ControlsBar extends ConsumerWidget {
               ),
             ),
             const SizedBox(width: 8),
-            // Source and level are compact dropdowns; both are short
-            // enough to sit beside the filter without squeezing it.
-            DropdownButton<MonitorSource>(
-              value: state.preferredSource,
-              underline: const SizedBox.shrink(),
-              onChanged: streaming
-                  ? null
-                  : (MonitorSource? source) {
-                      if (source != null) {
-                        controller.setSource(source);
-                      }
-                    },
-              items: const <DropdownMenuItem<MonitorSource>>[
-                DropdownMenuItem<MonitorSource>(
-                  value: MonitorSource.auto,
-                  child: Text('Auto'),
-                ),
-                DropdownMenuItem<MonitorSource>(
-                  value: MonitorSource.serial,
-                  child: Text('Serial'),
-                ),
-                DropdownMenuItem<MonitorSource>(
-                  value: MonitorSource.rtt,
-                  child: Text('RTT'),
-                ),
-              ],
+            // Flexible, not fixed: at large system text sizes these
+            // dropdowns grow and would otherwise overflow the row.
+            Flexible(
+              child: DropdownButton<MonitorSource>(
+                isExpanded: true,
+                value: state.preferredSource,
+                underline: const SizedBox.shrink(),
+                onChanged: streaming
+                    ? null
+                    : (MonitorSource? source) {
+                        if (source != null) {
+                          controller.setSource(source);
+                        }
+                      },
+                items: const <DropdownMenuItem<MonitorSource>>[
+                  DropdownMenuItem<MonitorSource>(
+                    value: MonitorSource.auto,
+                    child: Text('Auto'),
+                  ),
+                  DropdownMenuItem<MonitorSource>(
+                    value: MonitorSource.serial,
+                    child: Text('Serial'),
+                  ),
+                  DropdownMenuItem<MonitorSource>(
+                    value: MonitorSource.rtt,
+                    child: Text('RTT'),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(width: 4),
-            DropdownButton<DefmtLevel?>(
-              hint: const Text('All'),
-              value: state.minLevel,
-              underline: const SizedBox.shrink(),
-              items: const <DropdownMenuItem<DefmtLevel?>>[
-                DropdownMenuItem<DefmtLevel?>(child: Text('All')),
-                DropdownMenuItem<DefmtLevel?>(
-                  value: DefmtLevel.trace,
-                  child: Text('≥ trace'),
-                ),
-                DropdownMenuItem<DefmtLevel?>(
-                  value: DefmtLevel.debug,
-                  child: Text('≥ debug'),
-                ),
-                DropdownMenuItem<DefmtLevel?>(
-                  value: DefmtLevel.info,
-                  child: Text('≥ info'),
-                ),
-                DropdownMenuItem<DefmtLevel?>(
-                  value: DefmtLevel.warn,
-                  child: Text('≥ warn'),
-                ),
-                DropdownMenuItem<DefmtLevel?>(
-                  value: DefmtLevel.error,
-                  child: Text('error'),
-                ),
-              ],
-              onChanged: controller.setMinLevel,
+            Flexible(
+              child: DropdownButton<DefmtLevel?>(
+                isExpanded: true,
+                hint: const Text('All'),
+                value: state.minLevel,
+                underline: const SizedBox.shrink(),
+                items: const <DropdownMenuItem<DefmtLevel?>>[
+                  DropdownMenuItem<DefmtLevel?>(child: Text('All')),
+                  DropdownMenuItem<DefmtLevel?>(
+                    value: DefmtLevel.trace,
+                    child: Text('≥ trace'),
+                  ),
+                  DropdownMenuItem<DefmtLevel?>(
+                    value: DefmtLevel.debug,
+                    child: Text('≥ debug'),
+                  ),
+                  DropdownMenuItem<DefmtLevel?>(
+                    value: DefmtLevel.info,
+                    child: Text('≥ info'),
+                  ),
+                  DropdownMenuItem<DefmtLevel?>(
+                    value: DefmtLevel.warn,
+                    child: Text('≥ warn'),
+                  ),
+                  DropdownMenuItem<DefmtLevel?>(
+                    value: DefmtLevel.error,
+                    child: Text('error'),
+                  ),
+                ],
+                onChanged: controller.setMinLevel,
+              ),
             ),
           ],
         ),
@@ -354,7 +361,6 @@ class _LogView extends StatelessWidget {
     };
   }
 }
-
 
 String _byteCounterLabel(MonitorState state) {
   final dropped = state.droppedFrames;

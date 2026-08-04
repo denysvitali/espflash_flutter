@@ -223,6 +223,9 @@ final class MonitorController extends Notifier<MonitorState> {
       await _usb.jtagOpen(device);
       final dtm = RiscvDtm(JtagTap(EspUsbJtag(_UsbJtagWire(_usb))));
       await dtm.init();
+      // Without this the debug module stays in reset and every memory
+      // read comes back as zeros.
+      await dtm.attach();
       _dtm = dtm;
       final mem = _SbaMemory(dtm);
       final block = await locateRtt(mem, _elfFile);

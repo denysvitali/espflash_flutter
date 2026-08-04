@@ -182,18 +182,34 @@ final class EspUsbJtag {
   }
 }
 
+/// What the RISC-V DTM needs from the layer below it: reset the TAP and
+/// run IR+DR scans. [JtagTap] is the production implementation; tests
+/// substitute a fake debug module.
+abstract interface class DmiTransport {
+  /// Extra TCK cycles spent in Run-Test/Idle after each scan.
+  int get idleCycles;
+  set idleCycles(int value);
+
+  Future<void> tapReset();
+
+  /// Shift [ir] then [drBits]; returns the captured DR bits.
+  Future<List<bool>> writeRegister(int ir, int irWidth, List<bool> drBits);
+}
+
 /// JTAG TAP navigation helpers on top of [EspUsbJtag]. All scans start
 /// and end in Run-Test/Idle.
-final class JtagTap {
+final class JtagTap implements DmiTransport {
   JtagTap(this._jtag, {this.idleCycles = 1});
 
   final EspUsbJtag _jtag;
 
   /// Extra TCK cycles spent in Run-Test/Idle after each scan (from
   /// dtmcs.idle, bumped on busy responses).
+  @override
   int idleCycles;
 
   /// Test-Logic-Reset (≥5 TMS=1 clocks), then to Run-Test/Idle.
+  @override
   Future<void> tapReset() async {
     for (var i = 0; i < 5; i++) {
       await _jtag.shiftBit(true, true, false);
@@ -238,6 +254,7 @@ final class JtagTap {
   }
 
   /// IR then DR in one USB round trip; returns captured DR bits.
+  @override
   Future<List<bool>> writeRegister(
     int ir,
     int irWidth,

@@ -51,3 +51,6 @@ web/sodium.js
 *.jks.b64
 release-keystore.jks
 ci-keystore.jks
+
+# Local scratch (APK inspection, icon checks)
+icon-check/

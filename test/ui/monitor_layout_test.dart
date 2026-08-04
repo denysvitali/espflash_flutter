@@ -39,5 +39,32 @@ void main() {
       reason: 'label wrapped into a vertical column of letters',
     );
     expect(box.size.width, greaterThan(100));
+    expect(
+      box.size.width,
+      greaterThan(box.size.height),
+      reason: 'a taller-than-wide label means it wrapped per character',
+    );
+  });
+
+  testWidgets('controls survive large system text sizes', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: MaterialApp(
+          home: MediaQuery(
+            data: MediaQueryData(textScaler: TextScaler.linear(1.5)),
+            child: MonitorPage(),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(tester.takeException(), isNull);
   });
 }

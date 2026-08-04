@@ -27,6 +27,7 @@ const int _dmiSbdata0 = 0x3C;
 const int _dmiSbaddress0 = 0x39;
 const int _dmiSbcs = 0x38;
 const int _dmiDmcontrol = 0x10;
+const int _dmiDmstatus = 0x11;
 
 /// `dmcontrol` bits.
 const int _dmactive = 1 << 0;
@@ -36,10 +37,11 @@ const int _ndmreset = 1 << 1;
 final class RiscvDtm {
   RiscvDtm(this._tap);
 
-  final JtagTap _tap;
+  final DmiTransport _tap;
 
   int _abits = 0;
   bool _initialized = false;
+  bool _attached = false;
 
   /// TAP reset + DTMCS: validates the transport, learns `abits` and the
   /// idle-cycle hint.
@@ -134,6 +136,47 @@ final class RiscvDtm {
     await _dmiScanRetry(2, address, value);
   }
 
+  /// Take the debug module out of reset and confirm it can do 32-bit
+  /// System Bus Access.
+  ///
+  /// This must run after [init] and before any other debug-module
+  /// register is touched. While `dmcontrol.dmactive` is 0 the whole DM
+  /// is held at its reset values (debug spec 0.13.2 §3.12.2): writes to
+  /// `sbcs`/`sbaddress0` are discarded and `sbdata0` reads back 0 — so
+  /// memory reads silently return zeros. DTMCS lives in the JTAG TAP,
+  /// not the DM, which is why the transport looks healthy either way.
+  Future<void> attach() async {
+    final deadline = DateTime.now().add(const Duration(milliseconds: 500));
+    while (true) {
+      await dmiWrite(_dmiDmcontrol, _dmactive);
+      if (await dmiRead(_dmiDmcontrol) & _dmactive != 0) {
+        break;
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw const RiscvDebugError(
+          'debug module stays in reset (dmactive reads back 0)',
+        );
+      }
+    }
+    final dmstatus = await dmiRead(_dmiDmstatus);
+    if (dmstatus & 0xF == 0) {
+      throw RiscvDebugError(
+        'debug module not responding (dmstatus=0x${dmstatus.toRadixString(16)})',
+      );
+    }
+    final sbcs = await dmiRead(_dmiSbcs);
+    final sbversion = (sbcs >> 29) & 0x7;
+    final sbasize = (sbcs >> 5) & 0x7F;
+    final has32 = sbcs & (1 << 2) != 0;
+    if (sbversion != 1 || sbasize == 0 || !has32) {
+      throw RiscvDebugError(
+        'no 32-bit system bus access on this chip '
+        '(sbcs=0x${sbcs.toRadixString(16)})',
+      );
+    }
+    _attached = true;
+  }
+
   /// Reset the whole system through the debug module (`ndmreset`) and
   /// let the CPU run again. Unlike the ROM-bootloader dance this works
   /// while user firmware runs, and leaves the chip executing firmware.
@@ -148,16 +191,64 @@ final class RiscvDtm {
   // System Bus Access
   // ---------------------------------------------------------------------
 
-  // sbcs fields: sbaccess[19:17] (2 = 32-bit), sbreadonaddr[20],
-  // sbautoincrement[16], sbreadondata[15], sberror[14:12], sbbusy[21].
-  static const int _sbcsRead32 =
-      (2 << 17) | (1 << 20) | (1 << 16) | (1 << 15);
-  static const int _sbcsWrite32 = (2 << 17) | (1 << 16);
+  // sbcs (debug spec 0.13.2 §3.12.18):
+  //   sbversion[31:29] sbbusyerror[22] sbbusy[21] sbreadonaddr[20]
+  //   sbaccess[19:17] sbautoincrement[16] sbreadondata[15] sberror[14:12]
+  //   sbasize[11:5] sbaccess128[4] 64[3] 32[2] 16[1] 8[0]
+  static const int _sbBusyError = 1 << 22; // W1C
+  static const int _sbBusy = 1 << 21;
+  static const int _sbReadOnAddr = 1 << 20;
+  static const int _sbAccess32 = 2 << 17;
+  static const int _sbAutoIncrement = 1 << 16;
+  static const int _sbReadOnData = 1 << 15;
+
+  /// Single word: writing sbaddress0 is the only bus access.
+  static const int _sbcsSingleRead32 =
+      _sbBusyError | _sbAccess32 | _sbReadOnAddr;
+
+  /// Block: each sbdata0 read returns word i and prefetches word i+1.
+  static const int _sbcsBlockRead32 = _sbBusyError |
+      _sbAccess32 |
+      _sbReadOnAddr |
+      _sbAutoIncrement |
+      _sbReadOnData;
+
+  /// Autoread off — used before the final read of a block so the DM
+  /// does not fetch one word past the end.
+  static const int _sbcsAutoreadOff = _sbBusyError | _sbAccess32;
+
+  static const int _sbcsWrite32 =
+      _sbBusyError | _sbAccess32 | _sbAutoIncrement;
+
+  /// Flash-mapped windows are served by the cache, not the system bus;
+  /// probe-rs routes them elsewhere. RTT lives in DRAM, so refuse these
+  /// rather than return plausible garbage.
+  void _checkAddress(int address) {
+    if (!_attached) {
+      throw const RiscvDebugError('debug module not attached');
+    }
+    if (address & 3 != 0) {
+      throw RiscvDebugError(
+        'system bus access is word-aligned, got '
+        '0x${address.toRadixString(16)}',
+      );
+    }
+    final isFlashMapped = (address >= 0x3C000000 && address < 0x3C800000) ||
+        (address >= 0x42000000 && address < 0x42800000);
+    if (isFlashMapped) {
+      throw RiscvDebugError(
+        '0x${address.toRadixString(16)} is flash-mapped; the system bus '
+        'cannot read it reliably',
+      );
+    }
+  }
 
   /// Read one 32-bit word at [address].
   Future<int> readMem32(int address) async {
-    await dmiWrite(_dmiSbcs, _sbcsRead32);
-    await dmiWrite(_dmiSbaddress0, address);
+    _checkAddress(address);
+    await _waitNotBusy();
+    await dmiWrite(_dmiSbcs, _sbcsSingleRead32);
+    await dmiWrite(_dmiSbaddress0, address); // triggers the read
     final value = await dmiRead(_dmiSbdata0);
     await _checkSbError();
     return value;
@@ -168,31 +259,65 @@ final class RiscvDtm {
     if (wordCount <= 0) {
       return Uint32List(0);
     }
-    await dmiWrite(_dmiSbcs, _sbcsRead32);
-    await dmiWrite(_dmiSbaddress0, address);
-    final out = Uint32List(wordCount);
-    for (var i = 0; i < wordCount; i++) {
-      out[i] = await dmiRead(_dmiSbdata0);
+    if (wordCount == 1) {
+      return Uint32List.fromList(<int>[await readMem32(address)]);
     }
+    _checkAddress(address);
+    await _waitNotBusy();
+    await dmiWrite(_dmiSbcs, _sbcsBlockRead32);
+    await dmiWrite(_dmiSbaddress0, address); // fetches word 0
+    final out = Uint32List(wordCount);
+    for (var i = 0; i < wordCount - 1; i++) {
+      out[i] = await dmiRead(_dmiSbdata0); // word i, prefetches i+1
+    }
+    // Disable autoread before the last read, or the DM fetches one word
+    // past the block and can latch sberror at a region boundary.
+    await _waitNotBusy();
+    await dmiWrite(_dmiSbcs, _sbcsAutoreadOff);
+    out[wordCount - 1] = await dmiRead(_dmiSbdata0);
     await _checkSbError();
     return out;
   }
 
   /// Write one 32-bit word at [address].
   Future<void> writeMem32(int address, int value) async {
+    _checkAddress(address);
+    await _waitNotBusy();
     await dmiWrite(_dmiSbcs, _sbcsWrite32);
     await dmiWrite(_dmiSbaddress0, address);
-    await dmiWrite(_dmiSbdata0, value);
+    await dmiWrite(_dmiSbdata0, value); // triggers the write
     await _checkSbError();
+  }
+
+  /// sbcs must not be written while a bus access is in flight; doing so
+  /// sets sbbusyerror and wedges further accesses.
+  Future<void> _waitNotBusy() async {
+    final deadline = DateTime.now().add(const Duration(milliseconds: 500));
+    while (true) {
+      final sbcs = await dmiRead(_dmiSbcs);
+      if (sbcs & _sbBusy == 0) {
+        if (sbcs & _sbBusyError != 0) {
+          await dmiWrite(_dmiSbcs, _sbBusyError); // W1C
+        }
+        return;
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw const RiscvDebugError('system bus stayed busy');
+      }
+    }
   }
 
   Future<void> _checkSbError() async {
     final sbcs = await dmiRead(_dmiSbcs);
     final error = (sbcs >> 12) & 0x7;
-    if (error != 0) {
-      // Clear by writing 1s to sberror.
-      await dmiWrite(_dmiSbcs, error << 12);
-      throw RiscvDebugError('system bus access error $error');
+    final busyError = sbcs & _sbBusyError != 0;
+    if (error != 0 || busyError) {
+      // Both sberror and sbbusyerror are write-1-to-clear.
+      await dmiWrite(_dmiSbcs, (error << 12) | (busyError ? _sbBusyError : 0));
+      throw RiscvDebugError(
+        'system bus access error '
+        '${error != 0 ? 'sberror=$error' : 'sbbusyerror'}',
+      );
     }
   }
 }
