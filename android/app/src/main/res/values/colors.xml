@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive-icon backdrop; matches the gradient edge color baked into
+         assets/icon/app_icon.svg (the legacy pre-API-26 icon). -->
+    <color name="ic_launcher_background">#171A2C</color>
+</resources>

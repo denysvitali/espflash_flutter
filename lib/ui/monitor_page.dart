@@ -89,85 +89,111 @@ class _ControlsBar extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
+        // Firmware picker gets its own full-width row: sharing one row
+        // with the action icons left it a few pixels wide, which wrapped
+        // the label one letter per line.
+        if (elf != null)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: InputChip(
+              avatar: const Icon(Icons.description_outlined, size: 18),
+              label: Text(
+                '${elf.name} — ${elf.entryCount} strings, '
+                'defmt v${elf.version}'
+                '${elf.hasTimestamp ? '' : ' (no timestamp)'}',
+                overflow: TextOverflow.ellipsis,
+              ),
+              onDeleted: streaming ? null : controller.clearElf,
+            ),
+          )
+        else
+          FilledButton.tonalIcon(
+            onPressed: controller.pickElf,
+            icon: const Icon(Icons.folder_open),
+            label: const Text('Pick ELF or .tar.gz bundle'),
+          ),
+        const SizedBox(height: 8),
         Row(
           children: <Widget>[
-            if (elf != null)
-              Expanded(
-                child: InputChip(
-                  avatar: const Icon(Icons.description_outlined, size: 18),
-                  label: Text(
-                    '${elf.name} — ${elf.entryCount} strings, '
-                    'defmt v${elf.version}'
-                    '${elf.hasTimestamp ? '' : ' (no timestamp)'}',
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  onDeleted: streaming ? null : controller.clearElf,
-                ),
-              )
-            else
-              Expanded(
-                child: FilledButton.tonalIcon(
-                  onPressed: controller.pickElf,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('Pick ELF or .tar.gz bundle'),
-                ),
-              ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
-              tooltip: streaming ? 'Stop logs' : 'Start logs',
+            FilledButton.icon(
               onPressed: connected ? controller.connect : null,
+              icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
+              label: Text(streaming ? 'Stop' : 'Start'),
             ),
-            IconButton(
-              icon: const Icon(Icons.restart_alt),
-              tooltip: 'Reset chip (reboot into firmware)',
-              onPressed: streaming ? controller.resetChip : null,
-            ),
+            const SizedBox(width: 4),
             IconButton(
               icon: Icon(state.paused ? Icons.play_circle : Icons.pause_circle),
               tooltip: state.paused ? 'Resume' : 'Pause',
               onPressed: controller.togglePause,
             ),
             IconButton(
-              icon: const Icon(Icons.hexagon_outlined),
-              tooltip: 'Hex dump (diagnostic)',
-              color: state.hexMode
-                  ? Theme.of(context).colorScheme.primary
-                  : null,
-              onPressed: controller.toggleHexMode,
+              icon: const Icon(Icons.restart_alt),
+              tooltip: 'Reset chip',
+              onPressed: streaming ? controller.resetChip : null,
             ),
-            IconButton(
-              icon: const Icon(Icons.copy),
-              tooltip: 'Copy all logs to clipboard',
-              onPressed: state.lines.isEmpty
-                  ? null
-                  : () {
-                      Clipboard.setData(
-                        ClipboardData(text: controller.copyableLog()),
-                      );
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Logs copied to clipboard'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    },
-            ),
-            IconButton(
-              icon: const Icon(Icons.delete_outline),
-              tooltip: 'Clear log',
-              onPressed: controller.clearLog,
+            const Spacer(),
+            // Secondary actions live in an overflow menu so the row can
+            // never run out of width.
+            PopupMenuButton<String>(
+              tooltip: 'More actions',
+              onSelected: (String action) {
+                switch (action) {
+                  case 'hex':
+                    controller.toggleHexMode();
+                  case 'copy':
+                    Clipboard.setData(
+                      ClipboardData(text: controller.copyableLog()),
+                    );
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Logs copied to clipboard'),
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
+                  case 'clear':
+                    controller.clearLog();
+                }
+              },
+              itemBuilder: (BuildContext context) =>
+                  <PopupMenuEntry<String>>[
+                    CheckedPopupMenuItem<String>(
+                      value: 'hex',
+                      checked: state.hexMode,
+                      child: const Text('Hex dump'),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'copy',
+                      enabled: state.lines.isNotEmpty,
+                      child: const Text('Copy all logs'),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'clear',
+                      enabled: state.lines.isNotEmpty,
+                      child: const Text('Clear log'),
+                    ),
+                  ],
             ),
           ],
         ),
         Row(
           children: <Widget>[
-            const Padding(
-              padding: EdgeInsets.only(right: 8),
-              child: Icon(Icons.cable, size: 18),
+            Expanded(
+              child: TextField(
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                  labelText: 'Filter',
+                  prefixIcon: Icon(Icons.filter_alt_outlined, size: 18),
+                ),
+                onChanged: controller.setFilter,
+              ),
             ),
+            const SizedBox(width: 8),
+            // Source and level are compact dropdowns; both are short
+            // enough to sit beside the filter without squeezing it.
             DropdownButton<MonitorSource>(
               value: state.preferredSource,
+              underline: const SizedBox.shrink(),
               onChanged: streaming
                   ? null
                   : (MonitorSource? source) {
@@ -186,26 +212,15 @@ class _ControlsBar extends ConsumerWidget {
                 ),
                 DropdownMenuItem<MonitorSource>(
                   value: MonitorSource.rtt,
-                  child: Text('RTT (JTAG)'),
+                  child: Text('RTT'),
                 ),
               ],
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: TextField(
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                  labelText: 'Filter',
-                  prefixIcon: Icon(Icons.filter_alt_outlined, size: 18),
-                ),
-                onChanged: controller.setFilter,
-              ),
-            ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 4),
             DropdownButton<DefmtLevel?>(
-              hint: const Text('Level'),
+              hint: const Text('All'),
               value: state.minLevel,
+              underline: const SizedBox.shrink(),
               items: const <DropdownMenuItem<DefmtLevel?>>[
                 DropdownMenuItem<DefmtLevel?>(child: Text('All')),
                 DropdownMenuItem<DefmtLevel?>(
@@ -231,20 +246,20 @@ class _ControlsBar extends ConsumerWidget {
               ],
               onChanged: controller.setMinLevel,
             ),
-            if (state.phase == MonitorPhase.streaming)
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: Text(
-                  _byteCounterLabel(state),
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: state.droppedFrames > 0
-                        ? Theme.of(context).colorScheme.error
-                        : Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-              ),
           ],
         ),
+        if (state.phase == MonitorPhase.streaming)
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text(
+              _byteCounterLabel(state),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: state.droppedFrames > 0
+                    ? Theme.of(context).colorScheme.error
+                    : Theme.of(context).colorScheme.outline,
+              ),
+            ),
+          ),
       ],
     );
   }

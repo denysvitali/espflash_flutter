@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- espflasher launcher icon — monochrome silhouette for Android 13 themed icons.
+     Only the alpha channel is used by the launcher; keep it solid black.
+     Bolt is punched out of the chip via fill-rule="evenodd". -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <path fill="#000000" fill-rule="evenodd" d="
+    M27 39 h6 v4 h-6 Z
+    M27 52 h6 v4 h-6 Z
+    M27 65 h6 v4 h-6 Z
+    M75 39 h6 v4 h-6 Z
+    M75 52 h6 v4 h-6 Z
+    M75 65 h6 v4 h-6 Z
+    M39 27 h4 v6 h-4 Z
+    M52 27 h4 v6 h-4 Z
+    M65 27 h4 v6 h-4 Z
+    M39 75 h4 v6 h-4 Z
+    M52 75 h4 v6 h-4 Z
+    M65 75 h4 v6 h-4 Z
+    M40 33 h28 a7 7 0 0 1 7 7 v28 a7 7 0 0 1 -7 7 h-28 a7 7 0 0 1 -7 -7 v-28 a7 7 0 0 1 7 -7 Z
+    M60 36 L47 57 L55 57 L49 74 L63 52 L55 52 Z
+  "/>
+</svg>
