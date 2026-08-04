@@ -6,6 +6,7 @@ import android.hardware.usb.UsbManager
 import android.os.Bundle
 import com.example.espflash_flutter.usb.UsbChannels
 import com.example.espflash_flutter.usb.UsbException
+import com.example.espflash_flutter.usb.UsbJtagManager
 import com.example.espflash_flutter.usb.UsbSerialManager
 import com.example.espflash_flutter.usb.usbDeviceExtra
 import io.flutter.embedding.android.FlutterActivity
@@ -17,11 +18,14 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
 
     private var usb: UsbSerialManager? = null
+    private var jtag: UsbJtagManager? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val manager = UsbSerialManager(applicationContext)
         usb = manager
+        val jtagManager = UsbJtagManager(applicationContext)
+        jtag = jtagManager
 
         val methodChannel = MethodChannel(
             flutterEngine.dartExecutor, UsbChannels.METHODS)
@@ -75,6 +79,28 @@ class MainActivity : FlutterActivity() {
                         manager.setRts(call.boolArg("value"))
                         result.success(null)
                     }
+                    "jtagOpen" -> result.success(
+                        jtagManager.open(call.deviceId()),
+                    )
+                    "jtagWrite" -> {
+                        val bytes = call.argument<ByteArray>("bytes")
+                            ?: throw UsbException(
+                                "badArgs", "jtagWrite needs a bytes argument")
+                        // Answered asynchronously by the JTAG executor.
+                        jtagManager.write(bytes, result)
+                    }
+                    "jtagRead" -> {
+                        val maxLen = call.argument<Number>("maxLen")?.toInt()
+                            ?: throw UsbException(
+                                "badArgs", "jtagRead needs a maxLen argument")
+                        val timeoutMs =
+                            call.argument<Number>("timeoutMs")?.toInt() ?: 500
+                        jtagManager.read(maxLen, timeoutMs, result)
+                    }
+                    "jtagClose" -> {
+                        jtagManager.close()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             } catch (e: UsbException) {
@@ -98,6 +124,8 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         usb?.dispose()
         usb = null
+        jtag?.dispose()
+        jtag = null
         super.onDestroy()
     }
 

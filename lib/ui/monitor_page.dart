@@ -120,7 +120,7 @@ class _TopBar extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           )
-        else
+        else ...<Widget>[
           FilledButton.tonalIcon(
             onPressed: state.selectedDevice == null
                 ? null
@@ -128,6 +128,17 @@ class _TopBar extends StatelessWidget {
             icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
             label: Text(streaming ? 'Stop' : 'Start'),
           ),
+          const SizedBox(width: 4),
+          IconButton.filledTonal(
+            icon: const Icon(Icons.bug_report_outlined),
+            tooltip: 'Attach via RTT over USB JTAG (probe-rs style)',
+            onPressed: streaming ||
+                    state.selectedDevice == null ||
+                    state.selectedDevice?.isUsbJtag != true
+                ? null
+                : controller.startRtt,
+          ),
+        ],
       ],
     );
   }
@@ -313,9 +324,12 @@ class _LogView extends StatelessWidget {
           ? Center(
               child: Text(
                 state.phase == MonitorPhase.streaming
-                    ? 'Listening… (${state.bytesReceived} bytes)\n'
+                    ? 'Listening via '
+                          '${state.source == 'rtt' ? 'RTT' : 'serial'}'
+                          '… (${state.bytesReceived} bytes)\n'
                           'Nothing yet? Tap reset to reboot the chip.'
-                    : 'Pick an ELF, select a device, press Start.',
+                    : 'Pick an ELF, select a device, press Start.\n'
+                          'defmt-rtt firmware: use the RTT (bug) button.',
                 textAlign: TextAlign.center,
               ),
             )

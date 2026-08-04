@@ -41,6 +41,12 @@ is planned for v2.
   rendered live (rzcobs framing as emitted by esp-println's
   `FF 00 … 00` markers); non-defmt serial output passes through as raw
   text. Level filter, text filter, pause, chip reset included.
+- **RTT attach (probe-rs style, firmware untouched)**: for firmware that
+  logs via `defmt-rtt`, the app drives the ESP32-C3's built-in USB JTAG
+  interface (esp_usb_jtag nibble protocol → RISC-V DTM/DMI → System Bus
+  Access), finds the `_SEGGER_RTT` control block via the ELF symbol (RAM
+  signature scan as fallback), and polls the ring buffer while the chip
+  runs. Bug icon in the serial monitor.
 
 ## Development
 

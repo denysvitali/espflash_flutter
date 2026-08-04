@@ -46,6 +46,7 @@ final class MonitorState {
     this.devices = const <UsbDevice>[],
     this.selectedDeviceId,
     this.phase = MonitorPhase.idle,
+    this.source,
     this.elf,
     this.lines = const <MonitorLine>[],
     this.paused = false,
@@ -61,6 +62,9 @@ final class MonitorState {
   final List<UsbDevice> devices;
   final String? selectedDeviceId;
   final MonitorPhase phase;
+
+  /// 'serial' or 'rtt' while streaming; null when idle.
+  final String? source;
   final ElfInfo? elf;
   final List<MonitorLine> lines;
   final bool paused;
@@ -111,6 +115,7 @@ final class MonitorState {
     List<UsbDevice>? devices,
     String? Function()? selectedDeviceId,
     MonitorPhase? phase,
+    String? Function()? source,
     ElfInfo? Function()? elf,
     List<MonitorLine>? lines,
     bool? paused,
@@ -128,6 +133,7 @@ final class MonitorState {
           ? selectedDeviceId()
           : this.selectedDeviceId,
       phase: phase ?? this.phase,
+      source: source != null ? source() : this.source,
       elf: elf != null ? elf() : this.elf,
       lines: lines ?? this.lines,
       paused: paused ?? this.paused,

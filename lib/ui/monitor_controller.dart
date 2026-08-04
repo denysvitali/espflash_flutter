@@ -11,11 +11,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../defmt/defmt.dart';
+import '../defmt/rzcobs_stream.dart';
 import '../esp/chip_detect.dart';
 import '../esp/connection.dart';
 import '../esp/errors.dart';
 import '../esp/reset.dart';
 import '../esp/transport.dart';
+import '../jtag/esp_usb_jtag.dart';
+import '../jtag/riscv_debug.dart';
+import '../rtt/rtt.dart';
 import '../usb/android_usb_transport.dart';
 import '../usb/usb_device.dart';
 import '../usb/usb_events.dart';
@@ -37,8 +41,15 @@ final class MonitorController extends Notifier<MonitorState> {
   StreamSubscription<UsbEvent>? _eventsSub;
   StreamSubscription<Uint8List>? _dataSub;
   Completer<bool>? _permissionWaiter;
+  ElfFile? _elfFile;
   DefmtTable? _table;
   DefmtLogDecoder? _decoder;
+
+  /// RTT mode state.
+  Timer? _rttTimer;
+  RttChannelReader? _rttReader;
+  DefmtStreamDecoder? _rttDecoder;
+  bool _rttPolling = false;
 
   /// While the USB-JTAG reset dance runs, SLIP chatter hits the data
   /// stream; don't decode it as log output.
@@ -114,6 +125,7 @@ final class MonitorController extends Notifier<MonitorState> {
       }
       _decoder = DefmtLogDecoder(table);
       _table = table;
+      _elfFile = elf;
       _rawPending.clear();
       state = state.copyWith(
         elf: () => ElfInfo(
@@ -135,7 +147,122 @@ final class MonitorController extends Notifier<MonitorState> {
   void clearElf() {
     _decoder = null;
     _table = null;
+    _elfFile = null;
     state = state.copyWith(elf: () => null);
+  }
+
+  /// Attach via the built-in USB JTAG and read defmt logs from the RTT
+  /// ring buffer in RAM — the probe-rs workflow, firmware untouched.
+  /// Needs an ELF (defmt table + `_SEGGER_RTT` symbol) and a device on
+  /// its native USB-Serial-JTAG port.
+  Future<void> startRtt() async {
+    final device = state.selectedDevice;
+    final table = _table;
+    if (device == null || state.phase != MonitorPhase.idle) {
+      return;
+    }
+    if (table == null) {
+      _banner('Pick the firmware ELF first — RTT decoding needs it',
+          isError: true);
+      return;
+    }
+    if (!device.isUsbJtag) {
+      _banner(
+        "RTT needs the chip's native USB port (USB JTAG); "
+        "UART bridges can't do this",
+        isError: true,
+      );
+      return;
+    }
+    state = state.copyWith(
+      phase: MonitorPhase.connecting,
+      statusBanner: () => null,
+    );
+    try {
+      await _ensurePermission(device);
+      await _usb.jtagOpen(device);
+      final dtm = RiscvDtm(JtagTap(EspUsbJtag(_UsbJtagWire(_usb))));
+      await dtm.init();
+      final mem = _SbaMemory(dtm);
+      final block = await locateRtt(mem, _elfFile);
+      // Prefer the channel named "defmt".
+      RttUpChannel? chosen;
+      for (final channel in block.upChannels) {
+        final reader = RttChannelReader(mem, channel);
+        final name = await reader.readName();
+        chosen ??= channel;
+        if (name == 'defmt') {
+          chosen = channel;
+          break;
+        }
+      }
+      final channel = chosen;
+      if (channel == null) {
+        throw const RttError('control block has no up channels');
+      }
+      _rttReader = RttChannelReader(mem, channel);
+      _rttDecoder = DefmtStreamDecoder(table);
+      state = state.copyWith(
+        phase: MonitorPhase.streaming,
+        source: () => 'rtt',
+        bytesReceived: 0,
+        droppedFrames: 0,
+      );
+      await _screenOn(true);
+      _rttTimer = Timer.periodic(
+        const Duration(milliseconds: 60),
+        (_) => unawaited(_pollRtt()),
+      );
+    } on Object catch (error) {
+      await _teardown();
+      _banner('$error', isError: true);
+    }
+  }
+
+  Future<void> _pollRtt() async {
+    if (_rttPolling) {
+      return; // previous poll still in flight
+    }
+    _rttPolling = true;
+    try {
+      final reader = _rttReader;
+      final decoder = _rttDecoder;
+      if (reader == null || decoder == null) {
+        return;
+      }
+      final bytes = await reader.poll();
+      if (bytes.isEmpty || state.paused) {
+        return;
+      }
+      final lines = <MonitorLine>[
+        for (final line in decoder.feed(bytes))
+          switch (line) {
+            DefmtLine(:final frame) => MonitorLine(
+              text: frame.text,
+              level: frame.level,
+              timestamp: frame.timestamp,
+            ),
+            RawLine(:final bytes) => MonitorLine(
+              text: String.fromCharCodes(bytes),
+              isRaw: true,
+            ),
+          },
+      ];
+      var all = <MonitorLine>[...state.lines, ...lines];
+      if (all.length > _maxLines) {
+        all = all.sublist(all.length - _maxLines);
+      }
+      state = state.copyWith(
+        lines: all,
+        bytesReceived: state.bytesReceived + bytes.length,
+        droppedFrames: decoder.droppedFrames,
+      );
+    } on Object catch (error) {
+      _banner('RTT read failed: $error', isError: true);
+      await _teardown();
+    } finally {
+      _rttPolling = false;
+    }
   }
 
   /// Permission → open → start streaming. No bootloader sync: the device
@@ -164,7 +291,11 @@ final class MonitorController extends Notifier<MonitorState> {
         onError: (Object error) =>
             _banner('serial error: $error', isError: true),
       );
-      state = state.copyWith(phase: MonitorPhase.streaming, bytesReceived: 0);
+      state = state.copyWith(
+        phase: MonitorPhase.streaming,
+        source: () => 'serial',
+        bytesReceived: 0,
+      );
       await _screenOn(true);
       // Most firmware logs at boot: reset so the user actually sees
       // output. A failed reset must not kill the stream.
@@ -383,15 +514,24 @@ final class MonitorController extends Notifier<MonitorState> {
   }
 
   Future<void> _teardown() async {
+    _rttTimer?.cancel();
+    _rttTimer = null;
+    _rttReader = null;
+    _rttDecoder = null;
     await _dataSub?.cancel();
     _dataSub = null;
+    try {
+      await _usb.jtagClose();
+    } on Object {
+      // Not open / device gone.
+    }
     try {
       await _usb.close();
     } on Object {
       // Port already gone.
     }
     await _screenOn(false);
-    state = state.copyWith(phase: MonitorPhase.idle);
+    state = state.copyWith(phase: MonitorPhase.idle, source: () => null);
   }
 
   /// Keep the screen awake while streaming; tolerate platforms where the
@@ -442,4 +582,36 @@ final class _TransportAdapter implements EspTransport {
 
   @override
   Future<void> close() => _usb.close();
+}
+
+/// [JtagWire] over the USB JTAG bulk endpoints.
+final class _UsbJtagWire implements JtagWire {
+  const _UsbJtagWire(this._usb);
+
+  final UsbService _usb;
+
+  @override
+  Future<void> write(Uint8List bytes) => _usb.jtagWrite(bytes);
+
+  @override
+  Future<Uint8List> read(int maxLen, Duration timeout) =>
+      _usb.jtagRead(maxLen: maxLen, timeoutMs: timeout.inMilliseconds);
+}
+
+/// [TargetMemory] over the DTM's System Bus Access.
+final class _SbaMemory implements TargetMemory {
+  const _SbaMemory(this._dtm);
+
+  final RiscvDtm _dtm;
+
+  @override
+  Future<int> read32(int address) => _dtm.readMem32(address);
+
+  @override
+  Future<Uint32List> readBlock(int address, int wordCount) =>
+      _dtm.readMemBlock(address, wordCount);
+
+  @override
+  Future<void> write32(int address, int value) =>
+      _dtm.writeMem32(address, value);
 }

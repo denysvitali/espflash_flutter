@@ -9,6 +9,19 @@ import 'channels.dart';
 import 'usb_device.dart';
 import 'usb_events.dart';
 
+/// Capabilities of the ESP USB JTAG interface.
+final class JtagCaps {
+  const JtagCaps({
+    required this.baseSpeedKhz,
+    required this.divMin,
+    required this.divMax,
+  });
+
+  final int baseSpeedKhz;
+  final int divMin;
+  final int divMax;
+}
+
 /// Facade over the `espflash_flutter/usb` method channel and the two
 /// EventChannels for lifecycle events and raw serial data.
 class UsbService {
@@ -98,6 +111,46 @@ class UsbService {
   Future<void> setRts(bool value) => _guard(
     _methods.invokeMethod<void>('setRts', <String, Object?>{'value': value}),
   );
+
+  /// Claims the ESP USB JTAG interface (class FF/FF/01) on [device] and
+  /// returns its capabilities. Keeps the serial port untouched.
+  Future<JtagCaps> jtagOpen(UsbDevice device) async {
+    final raw = await _methods.invokeMethod<Map<Object?, Object?>>(
+      'jtagOpen',
+      <String, Object?>{'deviceId': device.deviceId},
+    );
+    final map = raw ?? const <Object?, Object?>{};
+    return JtagCaps(
+      baseSpeedKhz: (map['baseSpeedKhz'] as num?)?.toInt() ?? 1000,
+      divMin: (map['divMin'] as num?)?.toInt() ?? 1,
+      divMax: (map['divMax'] as num?)?.toInt() ?? 1,
+    );
+  }
+
+  /// bulk OUT to the JTAG endpoint. Throws on short writes.
+  Future<void> jtagWrite(Uint8List bytes) => _guard(
+    _methods.invokeMethod<void>('jtagWrite', <String, Object?>{
+      'bytes': bytes,
+    }),
+  );
+
+  /// bulk IN from the JTAG endpoint; empty list on timeout.
+  Future<Uint8List> jtagRead({int maxLen = 64, int timeoutMs = 500}) async {
+    final raw = await _methods.invokeMethod<List<Object?>>(
+      'jtagRead',
+      <String, Object?>{'maxLen': maxLen, 'timeoutMs': timeoutMs},
+    );
+    if (raw == null) {
+      return Uint8List(0);
+    }
+    if (raw is Uint8List) {
+      return raw;
+    }
+    return Uint8List.fromList(raw.cast<int>());
+  }
+
+  Future<void> jtagClose() =>
+      _methods.invokeMethod<void>('jtagClose');
 
   /// Maps platform errors caused by the device going away to
   /// [EspDeviceLostError]; anything else is rethrown unchanged.
