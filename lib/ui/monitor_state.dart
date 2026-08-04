@@ -7,6 +7,19 @@ import '../usb/usb_device.dart';
 /// Connection/streaming phase of the monitor.
 enum MonitorPhase { idle, connecting, streaming }
 
+/// Where log bytes come from.
+enum MonitorSource {
+  /// RTT when the ELF supports it and the chip is on its native USB
+  /// port, serial otherwise.
+  auto,
+
+  /// UART / CDC-ACM output.
+  serial,
+
+  /// RTT ring buffer read over the built-in USB JTAG.
+  rtt,
+}
+
 /// One rendered line in the monitor log.
 final class MonitorLine {
   const MonitorLine({
@@ -47,6 +60,7 @@ final class MonitorState {
     this.selectedDeviceId,
     this.phase = MonitorPhase.idle,
     this.source,
+    this.preferredSource = MonitorSource.auto,
     this.elf,
     this.lines = const <MonitorLine>[],
     this.paused = false,
@@ -65,6 +79,9 @@ final class MonitorState {
 
   /// 'serial' or 'rtt' while streaming; null when idle.
   final String? source;
+
+  /// Transport the user asked for; resolved at connect time.
+  final MonitorSource preferredSource;
   final ElfInfo? elf;
   final List<MonitorLine> lines;
   final bool paused;
@@ -116,6 +133,7 @@ final class MonitorState {
     String? Function()? selectedDeviceId,
     MonitorPhase? phase,
     String? Function()? source,
+    MonitorSource? preferredSource,
     ElfInfo? Function()? elf,
     List<MonitorLine>? lines,
     bool? paused,
@@ -134,6 +152,7 @@ final class MonitorState {
           : this.selectedDeviceId,
       phase: phase ?? this.phase,
       source: source != null ? source() : this.source,
+      preferredSource: preferredSource ?? this.preferredSource,
       elf: elf != null ? elf() : this.elf,
       lines: lines ?? this.lines,
       paused: paused ?? this.paused,

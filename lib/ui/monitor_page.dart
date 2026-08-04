@@ -120,25 +120,13 @@ class _TopBar extends StatelessWidget {
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
           )
-        else ...<Widget>[
+        else
           FilledButton.tonalIcon(
-            onPressed: state.selectedDevice == null
-                ? null
-                : (streaming ? controller.stop : controller.start),
+            onPressed:
+                state.selectedDevice == null ? null : controller.connect,
             icon: Icon(streaming ? Icons.stop : Icons.play_arrow),
-            label: Text(streaming ? 'Stop' : 'Start'),
+            label: Text(streaming ? 'Stop' : 'Connect'),
           ),
-          const SizedBox(width: 4),
-          IconButton.filledTonal(
-            icon: const Icon(Icons.bug_report_outlined),
-            tooltip: 'Attach via RTT over USB JTAG (probe-rs style)',
-            onPressed: streaming ||
-                    state.selectedDevice == null ||
-                    state.selectedDevice?.isUsbJtag != true
-                ? null
-                : controller.startRtt,
-          ),
-        ],
       ],
     );
   }
@@ -177,7 +165,7 @@ class _ControlsBar extends StatelessWidget {
                 child: FilledButton.tonalIcon(
                   onPressed: controller.pickElf,
                   icon: const Icon(Icons.folder_open),
-                  label: const Text('Pick ELF for defmt decoding'),
+                  label: const Text('Pick ELF or .tar.gz bundle'),
                 ),
               ),
             const SizedBox(width: 8),
@@ -225,6 +213,35 @@ class _ControlsBar extends StatelessWidget {
         ),
         Row(
           children: <Widget>[
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: Icon(Icons.cable, size: 18),
+            ),
+            DropdownButton<MonitorSource>(
+              value: state.preferredSource,
+              onChanged: streaming
+                  ? null
+                  : (MonitorSource? source) {
+                      if (source != null) {
+                        controller.setSource(source);
+                      }
+                    },
+              items: const <DropdownMenuItem<MonitorSource>>[
+                DropdownMenuItem<MonitorSource>(
+                  value: MonitorSource.auto,
+                  child: Text('Auto'),
+                ),
+                DropdownMenuItem<MonitorSource>(
+                  value: MonitorSource.serial,
+                  child: Text('Serial'),
+                ),
+                DropdownMenuItem<MonitorSource>(
+                  value: MonitorSource.rtt,
+                  child: Text('RTT (JTAG)'),
+                ),
+              ],
+            ),
+            const SizedBox(width: 8),
             Expanded(
               child: TextField(
                 decoration: const InputDecoration(

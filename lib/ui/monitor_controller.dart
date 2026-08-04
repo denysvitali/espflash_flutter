@@ -12,15 +12,13 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../defmt/defmt.dart';
 import '../defmt/rzcobs_stream.dart';
-import '../esp/chip_detect.dart';
-import '../esp/connection.dart';
 import '../esp/errors.dart';
+import '../esp/firmware_bundle.dart';
 import '../esp/reset.dart';
 import '../esp/transport.dart';
 import '../jtag/esp_usb_jtag.dart';
 import '../jtag/riscv_debug.dart';
 import '../rtt/rtt.dart';
-import '../usb/android_usb_transport.dart';
 import '../usb/usb_device.dart';
 import '../usb/usb_events.dart';
 import '../usb/usb_service.dart';
@@ -49,10 +47,10 @@ final class MonitorController extends Notifier<MonitorState> {
   Timer? _rttTimer;
   RttChannelReader? _rttReader;
   DefmtStreamDecoder? _rttDecoder;
+  RiscvDtm? _dtm;
   bool _rttPolling = false;
 
-  /// While the USB-JTAG reset dance runs, SLIP chatter hits the data
-  /// stream; don't decode it as log output.
+  /// Suppresses log rendering while a control sequence owns the port.
   bool _suppressData = false;
 
   /// Partial raw text not yet terminated by a newline.
@@ -101,15 +99,28 @@ final class MonitorController extends Notifier<MonitorState> {
     state = state.copyWith(selectedDeviceId: () => deviceId);
   }
 
-  /// Pick an ELF and build the defmt table from it.
+  /// Pick an ELF — or a `.tar.gz` firmware bundle, whose ELF is used.
   Future<void> pickElf() async {
     final result = await FilePicker.pickFiles(withData: true);
     final file = result?.files.single;
-    final bytes = file?.bytes;
-    if (file == null || bytes == null) {
+    final picked = file?.bytes;
+    if (file == null || picked == null) {
       return;
     }
+    var name = file.name;
+    var bytes = picked;
     try {
+      if (looksLikeBundle(file.name, picked)) {
+        final bundle = parseFirmwareBundle(picked);
+        final elfBytes = bundle.elf;
+        if (elfBytes == null) {
+          throw const FormatException(
+            'bundle carries no .elf — needed to decode defmt logs',
+          );
+        }
+        bytes = elfBytes;
+        name = bundle.elfName ?? file.name;
+      }
       final elf = ElfFile.parse(bytes);
       final table = DefmtTable.parse(elf);
       if (table == null) {
@@ -129,7 +140,7 @@ final class MonitorController extends Notifier<MonitorState> {
       _rawPending.clear();
       state = state.copyWith(
         elf: () => ElfInfo(
-          name: file.name,
+          name: name,
           entryCount: table.entries.length,
           version: table.version,
           hasTimestamp: table.hasTimestamp,
@@ -149,6 +160,48 @@ final class MonitorController extends Notifier<MonitorState> {
     _table = null;
     _elfFile = null;
     state = state.copyWith(elf: () => null);
+  }
+
+  /// Which transport [connect] should use.
+  void setSource(MonitorSource source) {
+    if (state.phase == MonitorPhase.idle) {
+      state = state.copyWith(preferredSource: source);
+    }
+  }
+
+  /// Single entry point: attaches over the selected transport.
+  ///
+  /// [MonitorSource.auto] takes RTT when the chip is on its native USB
+  /// port and the staged ELF carries an RTT control block (firmware that
+  /// logs over RTT never writes to the serial port), serial otherwise.
+  Future<void> connect() async {
+    if (state.phase != MonitorPhase.idle) {
+      await stop();
+      return;
+    }
+    final device = state.selectedDevice;
+    if (device == null) {
+      return;
+    }
+    final source = switch (state.preferredSource) {
+      MonitorSource.serial => MonitorSource.serial,
+      MonitorSource.rtt => MonitorSource.rtt,
+      MonitorSource.auto =>
+        device.isUsbJtag && _elfFile != null && _elfHasRtt
+            ? MonitorSource.rtt
+            : MonitorSource.serial,
+    };
+    if (source == MonitorSource.rtt) {
+      await startRtt();
+    } else {
+      await start();
+    }
+  }
+
+  /// True when the staged ELF exposes an RTT control block symbol.
+  bool get _elfHasRtt {
+    final elf = _elfFile;
+    return elf != null && symbolByName(elf, '_SEGGER_RTT') != null;
   }
 
   /// Attach via the built-in USB JTAG and read defmt logs from the RTT
@@ -183,6 +236,7 @@ final class MonitorController extends Notifier<MonitorState> {
       await _usb.jtagOpen(device);
       final dtm = RiscvDtm(JtagTap(EspUsbJtag(_UsbJtagWire(_usb))));
       await dtm.init();
+      _dtm = dtm;
       final mem = _SbaMemory(dtm);
       final block = await locateRtt(mem, _elfFile);
       // Prefer the channel named "defmt".
@@ -332,30 +386,27 @@ final class MonitorController extends Notifier<MonitorState> {
     }
   }
 
+  /// Reboot the chip into its firmware.
+  ///
+  /// Never enters the ROM bootloader: syncing requires the chip to be in
+  /// download mode, which fails outright while user firmware runs (the
+  /// old path reported "Failed to sync with the ROM bootloader"). In RTT
+  /// mode the debug module does a system reset; otherwise the auto-reset
+  /// lines are pulsed, which is a no-op on native USB but harmless.
   Future<void> _resetChip(UsbDevice device) async {
-    if (!device.isUsbJtag) {
-      // Release the auto-reset lines, then pulse EN.
-      await _usb.setDtr(false);
-      await _usb.setRts(false);
-      await const HardReset().reset(_TransportAdapter(_usb));
+    final dtm = _dtm;
+    if (dtm != null) {
+      await dtm.resetSystem();
       return;
     }
-    _suppressData = true;
-    try {
-      final transport = AndroidUsbTransport(service: _usb, device: device);
-      final connection = EspConnection(transport);
-      await connection.connect(resetStrategy: const UsbJtagReset());
-      final target = await detectChip(connection);
-      await target.rtcWdtReset(connection);
-      await connection.close();
-    } finally {
-      _suppressData = false;
-      _rawPending.clear();
-      // SLIP noise may have left the frame parser mid-frame; start fresh.
-      final table = _table;
-      if (table != null) {
-        _decoder = DefmtLogDecoder(table);
-      }
+    // Release the lines first: a stuck-low EN holds the chip in reset.
+    await _usb.setDtr(false);
+    await _usb.setRts(false);
+    await const HardReset().reset(_TransportAdapter(_usb));
+    _rawPending.clear();
+    final table = _table;
+    if (table != null) {
+      _decoder = DefmtLogDecoder(table);
     }
   }
 
@@ -518,6 +569,7 @@ final class MonitorController extends Notifier<MonitorState> {
     _rttTimer = null;
     _rttReader = null;
     _rttDecoder = null;
+    _dtm = null;
     await _dataSub?.cancel();
     _dataSub = null;
     try {

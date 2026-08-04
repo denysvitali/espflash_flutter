@@ -25,6 +25,9 @@ dependencies:
   # Keep the screen on during flashing / serial monitoring
   wakelock_plus: ^1.4.0
 
+  # Firmware bundles (.tar.gz) produced by CI
+  archive: ^4.0.7
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

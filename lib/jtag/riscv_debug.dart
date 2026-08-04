@@ -26,6 +26,11 @@ const int _irWidth = 5;
 const int _dmiSbdata0 = 0x3C;
 const int _dmiSbaddress0 = 0x39;
 const int _dmiSbcs = 0x38;
+const int _dmiDmcontrol = 0x10;
+
+/// `dmcontrol` bits.
+const int _dmactive = 1 << 0;
+const int _ndmreset = 1 << 1;
 
 /// RISC-V DTM access: init, DMI read/write, SBA memory IO.
 final class RiscvDtm {
@@ -127,6 +132,16 @@ final class RiscvDtm {
   /// DMI register write.
   Future<void> dmiWrite(int address, int value) async {
     await _dmiScanRetry(2, address, value);
+  }
+
+  /// Reset the whole system through the debug module (`ndmreset`) and
+  /// let the CPU run again. Unlike the ROM-bootloader dance this works
+  /// while user firmware runs, and leaves the chip executing firmware.
+  Future<void> resetSystem() async {
+    await dmiWrite(_dmiDmcontrol, _dmactive);
+    await dmiWrite(_dmiDmcontrol, _dmactive | _ndmreset);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    await dmiWrite(_dmiDmcontrol, _dmactive);
   }
 
   // ---------------------------------------------------------------------

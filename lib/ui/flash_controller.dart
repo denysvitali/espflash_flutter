@@ -3,6 +3,7 @@
 library;
 
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
@@ -12,6 +13,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../esp/chip_detect.dart';
 import '../esp/connection.dart';
 import '../esp/errors.dart';
+import '../esp/firmware_bundle.dart';
 import '../esp/flasher.dart';
 import '../esp/reset.dart';
 import '../esp/targets/chip_target.dart';
@@ -82,16 +84,28 @@ final class FlashController extends Notifier<FlashState> {
     state = state.copyWith(selectedDeviceId: () => deviceId);
   }
 
-  /// Ask the user to pick a `.bin` from device storage.
+  /// Ask the user to pick firmware: a raw `.bin`, or a `.tar.gz` build
+  /// bundle (whose image, offset and ELF are taken automatically).
   Future<void> pickFirmwareFile() async {
-    final result = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: <String>['bin'],
-      withData: true,
-    );
+    final result = await FilePicker.pickFiles(withData: true);
     final file = result?.files.single;
     final bytes = file?.bytes;
     if (file == null || bytes == null) {
+      return;
+    }
+    if (looksLikeBundle(file.name, bytes)) {
+      _stageBundle(file.name, bytes);
+      return;
+    }
+    if (looksLikeElf(bytes)) {
+      // An ELF is not a flashable image: the ROM writes raw flash
+      // contents, not program headers. Bundles ship the matching .bin.
+      _log('${file.name} is an ELF — pick the .bin or the .tar.gz bundle.');
+      _banner(
+        'ELF files carry symbols, not a flash image. Use the .bin '
+        '(or the .tar.gz bundle, which contains both).',
+        isError: true,
+      );
       return;
     }
     state = state.copyWith(
@@ -103,6 +117,43 @@ final class FlashController extends Notifier<FlashState> {
       statusBanner: () => null,
     );
     _log('Staged ${file.name} (${bytes.length} bytes) from local file.');
+  }
+
+  /// Unpack a build bundle and stage its preferred image.
+  void _stageBundle(String name, Uint8List bytes) {
+    try {
+      final bundle = parseFirmwareBundle(bytes);
+      final image = bundle.preferredImage!;
+      state = state.copyWith(
+        firmware: () => FirmwareImage(
+          name: image.name,
+          bytes: image.bytes,
+          sourceDescription: 'bundle $name',
+        ),
+        suggestedOffset: () => image.offset,
+        statusBanner: () => null,
+      );
+      final checked = bundle.verifiedFiles;
+      _log(
+        'Bundle $name: staged ${image.name} (${image.label}, '
+        '${image.bytes.length} bytes) at '
+        '0x${image.offset.toRadixString(16)}'
+        '${checked > 0 ? ', $checked checksums verified' : ''}.',
+      );
+      if (bundle.images.length > 1) {
+        final others = bundle.images.skip(1).map((i) => i.name).join(', ');
+        _log('Bundle also contains: $others.');
+      }
+      if (bundle.elfName != null) {
+        _log(
+          'Bundle ships ${bundle.elfName} — pick the same bundle in the '
+          'serial monitor to decode defmt logs.',
+        );
+      }
+    } on Object catch (error) {
+      _log('Bundle rejected: $error');
+      _banner('$error', isError: true);
+    }
   }
 
   /// Download a `.bin` from [url] and stage it.

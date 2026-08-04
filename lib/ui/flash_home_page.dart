@@ -52,6 +52,16 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
   Widget build(BuildContext context) {
     final state = ref.watch(flashControllerProvider);
     final controller = ref.read(flashControllerProvider.notifier);
+    // A staged bundle knows the offset its image belongs at; adopt it.
+    ref.listen(flashControllerProvider.select((s) => s.suggestedOffset), (
+      _,
+      int? offset,
+    ) {
+      if (offset != null) {
+        _offsetController.text = '0x${offset.toRadixString(16)}';
+        setState(() {});
+      }
+    });
     // Auto-scroll the log when new lines arrive.
     ref.listen(flashControllerProvider.select((s) => s.log.length), (_, _) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -232,7 +242,7 @@ class _FirmwareCard extends StatelessWidget {
               FilledButton.tonalIcon(
                 onPressed: locked ? null : controller.pickFirmwareFile,
                 icon: const Icon(Icons.folder_open),
-                label: const Text('Pick .bin file'),
+                label: const Text('Pick .bin or .tar.gz bundle'),
               ),
               const SizedBox(height: 8),
               Row(

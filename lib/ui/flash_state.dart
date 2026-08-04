@@ -46,6 +46,7 @@ final class FlashState {
     this.phase = FlashPhase.idle,
     this.chipName,
     this.firmware,
+    this.suggestedOffset,
     this.bytesWritten = 0,
     this.bytesTotal = 0,
     this.statusBanner,
@@ -66,6 +67,10 @@ final class FlashState {
 
   /// Firmware staged for flashing.
   final FirmwareImage? firmware;
+
+  /// Offset the staged image must go to, when the source knows it (a
+  /// build bundle). The UI prefills the offset field with this.
+  final int? suggestedOffset;
 
   /// Progress of the current flash run.
   final int bytesWritten;
@@ -98,6 +103,7 @@ final class FlashState {
     FlashPhase? phase,
     String? Function()? chipName,
     FirmwareImage? Function()? firmware,
+    int? Function()? suggestedOffset,
     int? bytesWritten,
     int? bytesTotal,
     String? Function()? statusBanner,
@@ -112,6 +118,9 @@ final class FlashState {
       phase: phase ?? this.phase,
       chipName: chipName != null ? chipName() : this.chipName,
       firmware: firmware != null ? firmware() : this.firmware,
+      suggestedOffset: suggestedOffset != null
+          ? suggestedOffset()
+          : this.suggestedOffset,
       bytesWritten: bytesWritten ?? this.bytesWritten,
       bytesTotal: bytesTotal ?? this.bytesTotal,
       statusBanner: statusBanner != null ? statusBanner() : this.statusBanner,
