@@ -125,7 +125,10 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
           }
           return devices.length == 1 ? devices.single.deviceId : null;
         },
-        error: () => devices.isEmpty ? 'No USB devices found.' : null,
+        error: () => devices.isEmpty
+            ? 'No USB devices found. On OnePlus/OxygenOS, enable OTG '
+                  'connection in Settings, then retry.'
+            : null,
       );
     } on Object catch (error) {
       state = state.copyWith(error: () => 'USB not available: $error');

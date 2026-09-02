@@ -60,14 +60,24 @@ final class FlashController extends Notifier<FlashState> {
     if (file == null || bytes == null) {
       return;
     }
-    if (looksLikeBundle(file.name, bytes)) {
-      _stageBundle(file.name, bytes);
+    stageFirmwareFile(file.name, bytes, sourceDescription: 'local file');
+  }
+
+  /// Validate and stage firmware supplied by either the picker or an Android
+  /// Open-with intent.
+  void stageFirmwareFile(
+    String name,
+    Uint8List bytes, {
+    required String sourceDescription,
+  }) {
+    if (looksLikeBundle(name, bytes)) {
+      _stageBundle(name, bytes, sourceDescription: sourceDescription);
       return;
     }
     if (looksLikeElf(bytes)) {
       // An ELF is not a flashable image: the ROM writes raw flash
       // contents, not program headers. Bundles ship the matching .bin.
-      _log('${file.name} is an ELF — pick the .bin or the .tar.gz bundle.');
+      _log('$name is an ELF — pick the .bin or the .tar.gz bundle.');
       _banner(
         'ELF files carry symbols, not a flash image. Use the .bin '
         '(or the .tar.gz bundle, which contains both).',
@@ -77,17 +87,21 @@ final class FlashController extends Notifier<FlashState> {
     }
     state = state.copyWith(
       firmware: () => FirmwareImage(
-        name: file.name,
+        name: name,
         bytes: bytes,
-        sourceDescription: 'local file',
+        sourceDescription: sourceDescription,
       ),
       statusBanner: () => null,
     );
-    _log('Staged ${file.name} (${bytes.length} bytes) from local file.');
+    _log('Staged $name (${bytes.length} bytes) from $sourceDescription.');
   }
 
   /// Unpack a build bundle and stage its preferred image.
-  void _stageBundle(String name, Uint8List bytes) {
+  void _stageBundle(
+    String name,
+    Uint8List bytes, {
+    required String sourceDescription,
+  }) {
     try {
       final bundle = parseFirmwareBundle(bytes);
       final image = bundle.preferredImage!;
@@ -95,7 +109,7 @@ final class FlashController extends Notifier<FlashState> {
         firmware: () => FirmwareImage(
           name: image.name,
           bytes: image.bytes,
-          sourceDescription: 'bundle $name',
+          sourceDescription: '$sourceDescription bundle $name',
         ),
         suggestedOffset: () => image.offset,
         statusBanner: () => null,
@@ -172,8 +186,9 @@ final class FlashController extends Notifier<FlashState> {
     final connection = EspConnection(transport);
     _connection = connection;
     await connection.connect(
-      resetStrategy:
-          device.isUsbJtag ? const UsbJtagReset() : const ClassicReset(),
+      resetStrategy: device.isUsbJtag
+          ? const UsbJtagReset()
+          : const ClassicReset(),
     );
     final target = await detectChip(connection);
     _target = target;
@@ -194,8 +209,10 @@ final class FlashController extends Notifier<FlashState> {
       return;
     }
     if (!session.claim(DeviceActivity.flashing)) {
-      _banner('The serial monitor is using the port — stop it first.',
-          isError: true);
+      _banner(
+        'The serial monitor is using the port — stop it first.',
+        isError: true,
+      );
       return;
     }
     _cancelRequested = false;

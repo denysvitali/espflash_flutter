@@ -50,7 +50,8 @@ fun Intent.usbDeviceExtra(): UsbDevice? {
 /**
  * Wraps mik3y/usb-serial-for-android behind the espflash_flutter platform
  * channels. Owns device enumeration, the permission dialog flow, the open
- * serial port and the attach/detach/permission broadcast receivers.
+ * serial port and the detach/permission broadcast receivers. Attach is an
+ * Activity intent (not a broadcast) and is forwarded by MainActivity.
  */
 class UsbSerialManager(private val context: Context) {
 
@@ -59,6 +60,7 @@ class UsbSerialManager(private val context: Context) {
             "com.example.espflash_flutter.USB_PERMISSION"
         private const val DEFAULT_BAUD_RATE = 115200
         private const val WRITE_TIMEOUT_MS = 2000
+        private const val MAX_PENDING_EVENTS = 32
     }
 
     private val usbManager: UsbManager =
@@ -75,6 +77,7 @@ class UsbSerialManager(private val context: Context) {
 
     private var eventsSink: EventChannel.EventSink? = null
     private var dataSink: EventChannel.EventSink? = null
+    private val pendingEvents = ArrayDeque<Map<String, Any>>()
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(receiverContext: Context, intent: Intent) {
@@ -83,13 +86,6 @@ class UsbSerialManager(private val context: Context) {
                 UsbManager.EXTRA_PERMISSION_GRANTED, false)
             val type = if (granted) "permissionGranted" else "permissionDenied"
             emitEvent(type, device)
-        }
-    }
-
-    private val attachReceiver = object : BroadcastReceiver() {
-        override fun onReceive(receiverContext: Context, intent: Intent) {
-            val device = intent.usbDeviceExtra() ?: return
-            notifyAttached(device)
         }
     }
 
@@ -118,9 +114,11 @@ class UsbSerialManager(private val context: Context) {
     }
 
     init {
-        registerReceiver(permissionReceiver, ACTION_USB_PERMISSION)
-        registerReceiver(attachReceiver, UsbManager.ACTION_USB_DEVICE_ATTACHED)
-        registerReceiver(detachReceiver, UsbManager.ACTION_USB_DEVICE_DETACHED)
+        registerAppReceiver(permissionReceiver, ACTION_USB_PERMISSION)
+        registerSystemReceiver(
+            detachReceiver,
+            UsbManager.ACTION_USB_DEVICE_DETACHED,
+        )
     }
 
     fun attachEventsChannel(channel: EventChannel) {
@@ -130,6 +128,11 @@ class UsbSerialManager(private val context: Context) {
                 events: EventChannel.EventSink?,
             ) {
                 eventsSink = events
+                if (events != null) {
+                    while (pendingEvents.isNotEmpty()) {
+                        events.success(pendingEvents.removeFirst())
+                    }
+                }
             }
 
             override fun onCancel(arguments: Any?) {
@@ -276,7 +279,6 @@ class UsbSerialManager(private val context: Context) {
         close()
         writeExecutor.shutdownNow()
         context.unregisterReceiver(permissionReceiver)
-        context.unregisterReceiver(attachReceiver)
         context.unregisterReceiver(detachReceiver)
     }
 
@@ -325,19 +327,44 @@ class UsbSerialManager(private val context: Context) {
             "vendorId" to device.vendorId,
             "productId" to device.productId,
         )
-        mainHandler.post { eventsSink?.success(event) }
+        mainHandler.post {
+            val sink = eventsSink
+            if (sink != null) {
+                sink.success(event)
+            } else {
+                // USB_DEVICE_ATTACHED commonly cold-starts the Activity.
+                // configureFlutterEngine/onCreate run before Dart subscribes
+                // to the EventChannel, so dropping this event makes device
+                // discovery depend on vendor-specific enumeration timing.
+                if (pendingEvents.size == MAX_PENDING_EVENTS) {
+                    pendingEvents.removeFirst()
+                }
+                pendingEvents.addLast(event)
+            }
+        }
     }
 
-    private fun registerReceiver(receiver: BroadcastReceiver, action: String) {
+    private fun registerAppReceiver(
+        receiver: BroadcastReceiver,
+        action: String,
+    ) {
         val filter = IntentFilter(action)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Both the permission broadcast (sent via our own PendingIntent)
-            // and the protected attach/detach broadcasts reach a
-            // not-exported receiver.
             context.registerReceiver(
                 receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             context.registerReceiver(receiver, filter)
         }
+    }
+
+    private fun registerSystemReceiver(
+        receiver: BroadcastReceiver,
+        action: String,
+    ) {
+        // Android's guidance says not to specify an export flag for a
+        // receiver that listens only for framework broadcasts. In
+        // particular, RECEIVER_NOT_EXPORTED may miss broadcasts emitted by
+        // privileged system components on vendor builds.
+        context.registerReceiver(receiver, IntentFilter(action))
     }
 }

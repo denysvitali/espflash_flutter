@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../platform/firmware_source.dart';
 import 'app_theme.dart';
 import 'app_widgets.dart';
 import 'device_bar.dart';
@@ -26,6 +27,7 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
     text: '0x0',
   );
   final ScrollController _logScroll = ScrollController();
+  final FirmwareSourceService _firmwareSources = FirmwareSourceService();
   bool _eraseFirst = false;
 
   @override
@@ -33,11 +35,50 @@ class _FlashHomePageState extends ConsumerState<FlashHomePage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(deviceSessionProvider.notifier).refreshDevices();
+      _startFirmwareSources();
     });
+  }
+
+  Future<void> _startFirmwareSources() async {
+    try {
+      await _firmwareSources.start((file) async {
+        if (!mounted) {
+          return;
+        }
+        ref
+            .read(flashControllerProvider.notifier)
+            .stageFirmwareFile(
+              file.name,
+              file.bytes,
+              sourceDescription: 'opened file',
+            );
+      }, onError: _showFirmwareOpenError);
+    } on MissingPluginException {
+      // Unit tests and non-Android platforms do not install this channel.
+    } on PlatformException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(error.message ?? 'Could not open firmware')),
+        );
+      }
+    }
+  }
+
+  void _showFirmwareOpenError(Object error) {
+    if (!mounted) {
+      return;
+    }
+    final message = error is PlatformException
+        ? error.message ?? 'Could not open firmware'
+        : '$error';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   void dispose() {
+    _firmwareSources.dispose();
     _urlController.dispose();
     _offsetController.dispose();
     _logScroll.dispose();

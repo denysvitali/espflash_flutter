@@ -156,13 +156,19 @@ FirmwareBundle parseFirmwareBundle(Uint8List bytes) {
     );
   }
   if (images.isEmpty) {
-    throw const BundleFormatException(
-      'bundle has no .bin image to flash',
-    );
+    throw const BundleFormatException('bundle has no .bin image to flash');
   }
   images.sort((a, b) {
     if (a.isFullFlash != b.isFullFlash) {
       return a.isFullFlash ? -1 : 1;
+    }
+    // A bundle may include both its normal release image and a field/rescue
+    // variant. Prefer the normal image; opening the bundle should not
+    // silently select a maintenance build merely because it sorts first.
+    final aMaintenance = _isMaintenanceImage(a.name);
+    final bMaintenance = _isMaintenanceImage(b.name);
+    if (aMaintenance != bMaintenance) {
+      return aMaintenance ? 1 : -1;
     }
     return a.name.compareTo(b.name);
   });
@@ -174,6 +180,11 @@ FirmwareBundle parseFirmwareBundle(Uint8List bytes) {
     partitionCsv: partitionCsv,
     verifiedFiles: verified,
   );
+}
+
+bool _isMaintenanceImage(String name) {
+  final lower = name.toLowerCase();
+  return lower.contains('field') || lower.contains('rescue');
 }
 
 /// Verifies every `<sha256>  <name>` line of a checksum file. Returns the

@@ -34,7 +34,13 @@ Uint8List buildBundle(
 }
 
 /// 4 bytes of ELF magic + padding, enough for the shape checks here.
-final elfBytes = Uint8List.fromList([0x7F, 0x45, 0x4C, 0x46, ...List.filled(60, 0)]);
+final elfBytes = Uint8List.fromList([
+  0x7F,
+  0x45,
+  0x4C,
+  0x46,
+  ...List.filled(60, 0),
+]);
 
 const partitionCsv = '''
 # Name,   Type, SubType, Offset,   Size,  Flags
@@ -47,7 +53,9 @@ app1,     app,  ota_1,   0x1e0000, 0x1C0000,
 void main() {
   group('looksLikeBundle / looksLikeElf', () {
     test('gzip magic wins over the file name', () {
-      final gz = buildBundle({'a.bin': [1, 2, 3]});
+      final gz = buildBundle({
+        'a.bin': [1, 2, 3],
+      });
       expect(looksLikeBundle('downloaded-file', gz), isTrue);
       expect(looksLikeBundle('x.tar.gz', Uint8List(0)), isTrue);
       expect(looksLikeBundle('x.bin', Uint8List.fromList([1, 2])), isFalse);
@@ -88,14 +96,23 @@ void main() {
       expect(bundle.images.single.isFullFlash, isFalse);
     });
 
-    test('checksum mismatch is rejected', () {
-      final bytes = buildBundle(
-        {
-          'a-full-flash.bin': List<int>.filled(16, 7),
-          'a.elf': elfBytes,
-        },
-        corruptChecksumFor: 'a-full-flash.bin',
+    test('normal full flash is preferred over field/rescue variants', () {
+      final bundle = parseFirmwareBundle(
+        buildBundle({
+          'tracker-production-field-full-flash.bin': List<int>.filled(8, 1),
+          'tracker-production-full-flash.bin': List<int>.filled(8, 2),
+          'tracker-production-ota.bin': List<int>.filled(8, 3),
+        }),
       );
+
+      expect(bundle.preferredImage!.name, 'tracker-production-full-flash.bin');
+    });
+
+    test('checksum mismatch is rejected', () {
+      final bytes = buildBundle({
+        'a-full-flash.bin': List<int>.filled(16, 7),
+        'a.elf': elfBytes,
+      }, corruptChecksumFor: 'a-full-flash.bin');
       expect(
         () => parseFirmwareBundle(bytes),
         throwsA(
@@ -110,10 +127,9 @@ void main() {
 
     test('bundle without checksums still parses (0 verified)', () {
       final bundle = parseFirmwareBundle(
-        buildBundle(
-          {'x-full-flash.bin': List<int>.filled(4, 9)},
-          withChecksums: false,
-        ),
+        buildBundle({
+          'x-full-flash.bin': List<int>.filled(4, 9),
+        }, withChecksums: false),
       );
       expect(bundle.verifiedFiles, 0);
       expect(bundle.images, hasLength(1));
@@ -163,15 +179,19 @@ void main() {
 
     test('rows without an offset are skipped', () {
       expect(
-        appOffsetFromPartitionCsv('app0, app, ota_0, , 1M,\n'
-            'app1, app, ota_1, 0x30000, 1M,'),
+        appOffsetFromPartitionCsv(
+          'app0, app, ota_0, , 1M,\n'
+          'app1, app, ota_1, 0x30000, 1M,',
+        ),
         0x30000,
       );
     });
 
     test('no app row → null', () {
-      expect(appOffsetFromPartitionCsv('nvs, data, nvs, 0x9000, 0x6000,'),
-          isNull);
+      expect(
+        appOffsetFromPartitionCsv('nvs, data, nvs, 0x9000, 0x6000,'),
+        isNull,
+      );
     });
   });
 }

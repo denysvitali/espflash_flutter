@@ -30,6 +30,32 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Offer espflash when a firmware image or build bundle is
+                 opened from a file manager, browser, mail client, etc. Most
+                 providers expose .bin files as application/octet-stream and
+                 .tar.gz files as one of the gzip MIME variants below. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="content"/>
+                <data android:scheme="file"/>
+                <data android:mimeType="application/octet-stream"/>
+                <data android:mimeType="application/gzip"/>
+                <data android:mimeType="application/x-gzip"/>
+                <data android:mimeType="application/x-compressed-tar"/>
+                <data android:mimeType="application/x-tar"/>
+            </intent-filter>
+            <!-- Some document providers use Share rather than Open with. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <data android:mimeType="application/octet-stream"/>
+                <data android:mimeType="application/gzip"/>
+                <data android:mimeType="application/x-gzip"/>
+                <data android:mimeType="application/x-compressed-tar"/>
+                <data android:mimeType="application/x-tar"/>
+            </intent-filter>
             <!-- Relaunch (singleTop) when a supported ESP board is plugged
                  in; res/xml/device_filter.xml selects the VID/PID pairs. -->
             <intent-filter>
