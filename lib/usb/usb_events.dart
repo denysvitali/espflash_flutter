@@ -2,14 +2,12 @@
 /// the `espflash_flutter/usb/events` EventChannel.
 library;
 
+import 'usb_device.dart';
+
 /// One lifecycle event: a device was attached/detached or a permission
 /// request was granted/denied.
 sealed class UsbEvent {
-  const UsbEvent({
-    required this.deviceId,
-    required this.vendorId,
-    required this.productId,
-  });
+  const UsbEvent();
 
   /// Parses the map shape emitted by the Kotlin `UsbSerialManager`.
   ///
@@ -17,6 +15,16 @@ sealed class UsbEvent {
   /// platform-side contract drift fails loudly instead of dropping
   /// silently into the UI state machine.
   factory UsbEvent.fromMap(Map<Object?, Object?> map) {
+    if (map['type'] == 'snapshot') {
+      return UsbSnapshot(
+        (map['devices'] as List<Object?>)
+            .map(
+              (entry) =>
+                  UsbDiagnosticDevice.fromMap(entry as Map<Object?, Object?>),
+            )
+            .toList(),
+      );
+    }
     final deviceId = map['deviceId'] as String;
     final vendorId = map['vendorId'] as int;
     final productId = map['productId'] as int;
@@ -49,6 +57,14 @@ sealed class UsbEvent {
         throw FormatException('Unknown USB event type: ${map['type']}');
     }
   }
+}
+
+sealed class UsbDeviceEvent extends UsbEvent {
+  const UsbDeviceEvent({
+    required this.deviceId,
+    required this.vendorId,
+    required this.productId,
+  });
 
   /// Platform identifier (Android `UsbDevice.getDeviceName`).
   final String deviceId;
@@ -59,7 +75,7 @@ sealed class UsbEvent {
 
   @override
   bool operator ==(Object other) =>
-      other is UsbEvent &&
+      other is UsbDeviceEvent &&
       other.runtimeType == runtimeType &&
       other.deviceId == deviceId &&
       other.vendorId == vendorId &&
@@ -71,7 +87,7 @@ sealed class UsbEvent {
 
 /// A USB device was plugged in, or the app was launched by the
 /// USB_DEVICE_ATTACHED intent.
-final class UsbDeviceAttached extends UsbEvent {
+final class UsbDeviceAttached extends UsbDeviceEvent {
   const UsbDeviceAttached({
     required super.deviceId,
     required super.vendorId,
@@ -84,7 +100,7 @@ final class UsbDeviceAttached extends UsbEvent {
 
 /// A USB device was unplugged (or re-enumerated, which shows up as
 /// detached followed by attached).
-final class UsbDeviceDetached extends UsbEvent {
+final class UsbDeviceDetached extends UsbDeviceEvent {
   const UsbDeviceDetached({
     required super.deviceId,
     required super.vendorId,
@@ -96,7 +112,7 @@ final class UsbDeviceDetached extends UsbEvent {
 }
 
 /// The user granted USB permission for the device.
-final class UsbPermissionGranted extends UsbEvent {
+final class UsbPermissionGranted extends UsbDeviceEvent {
   const UsbPermissionGranted({
     required super.deviceId,
     required super.vendorId,
@@ -108,7 +124,7 @@ final class UsbPermissionGranted extends UsbEvent {
 }
 
 /// The user denied (or dismissed) the USB permission dialog.
-final class UsbPermissionDenied extends UsbEvent {
+final class UsbPermissionDenied extends UsbDeviceEvent {
   const UsbPermissionDenied({
     required super.deviceId,
     required super.vendorId,
@@ -117,4 +133,10 @@ final class UsbPermissionDenied extends UsbEvent {
 
   @override
   String toString() => 'UsbPermissionDenied($deviceId)';
+}
+
+/// An authoritative raw Android snapshot, including unsupported peripherals.
+final class UsbSnapshot extends UsbEvent {
+  const UsbSnapshot(this.devices);
+  final List<UsbDiagnosticDevice> devices;
 }

@@ -66,6 +66,20 @@ class UsbService {
     return devices;
   }
 
+  /// Raw Android devices, including unsupported serial peripherals.
+  Future<List<UsbDiagnosticDevice>> listRawDevices() async {
+    final raw = await _methods.invokeMethod<List<Object?>>('listRawDevices');
+    return (raw ?? const <Object?>[])
+        .map(
+          (entry) =>
+              UsbDiagnosticDevice.fromMap(entry as Map<Object?, Object?>),
+        )
+        .toList();
+  }
+
+  /// Request a bounded native scan window; snapshots arrive on [events].
+  Future<void> reconcileUsb() => _methods.invokeMethod<void>('reconcileUsb');
+
   /// Whether USB permission is already granted for [device]. A device that
   /// vanished reports `false` rather than an error.
   Future<bool> hasPermission(UsbDevice device) async {
@@ -129,9 +143,7 @@ class UsbService {
 
   /// bulk OUT to the JTAG endpoint. Throws on short writes.
   Future<void> jtagWrite(Uint8List bytes) => _guard(
-    _methods.invokeMethod<void>('jtagWrite', <String, Object?>{
-      'bytes': bytes,
-    }),
+    _methods.invokeMethod<void>('jtagWrite', <String, Object?>{'bytes': bytes}),
   );
 
   /// bulk IN from the JTAG endpoint; empty list on timeout.
@@ -149,8 +161,7 @@ class UsbService {
     return Uint8List.fromList(raw.cast<int>());
   }
 
-  Future<void> jtagClose() =>
-      _methods.invokeMethod<void>('jtagClose');
+  Future<void> jtagClose() => _methods.invokeMethod<void>('jtagClose');
 
   /// Maps platform errors caused by the device going away to
   /// [EspDeviceLostError]; anything else is rethrown unchanged.

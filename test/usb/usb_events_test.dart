@@ -3,6 +3,31 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('UsbEvent.fromMap', () {
+    test('parses raw snapshots without requiring an attachment token', () {
+      final event =
+          UsbEvent.fromMap({
+                'type': 'snapshot',
+                'devices': [
+                  {
+                    'deviceId': 'raw',
+                    'vendorId': 1,
+                    'productId': 2,
+                    'hasPermission': false,
+                    'hasSerialDriver': false,
+                  },
+                ],
+              })
+              as UsbSnapshot;
+      expect(event.devices.single.device.deviceId, 'raw');
+      expect(event.devices.single.hasSerialDriver, isFalse);
+      expect(event.devices.single.hasPermission, isFalse);
+      expect(
+        (UsbEvent.fromMap({'type': 'snapshot', 'devices': []}) as UsbSnapshot)
+            .devices,
+        isEmpty,
+      );
+    });
+
     test('parses attached', () {
       final UsbEvent event = UsbEvent.fromMap(const <String, Object?>{
         'type': 'attached',
@@ -11,7 +36,7 @@ void main() {
         'productId': 0x1001,
       });
       expect(event, isA<UsbDeviceAttached>());
-      expect(event.deviceId, '/dev/bus/usb/001/002');
+      expect((event as UsbDeviceEvent).deviceId, '/dev/bus/usb/001/002');
       expect(event.vendorId, 0x303A);
       expect(event.productId, 0x1001);
     });
@@ -89,11 +114,7 @@ void main() {
     test('different subtypes are not equal', () {
       expect(
         const UsbDeviceAttached(deviceId: 'dev', vendorId: 1, productId: 2) ==
-            const UsbDeviceDetached(
-              deviceId: 'dev',
-              vendorId: 1,
-              productId: 2,
-            ),
+            const UsbDeviceDetached(deviceId: 'dev', vendorId: 1, productId: 2),
         isFalse,
       );
     });

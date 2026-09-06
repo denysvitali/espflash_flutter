@@ -11,6 +11,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.hoho.android.usbserial.util.SerialInputOutputManager
@@ -77,39 +78,60 @@ class UsbSerialManager(private val context: Context) {
 
     private var eventsSink: EventChannel.EventSink? = null
     private var dataSink: EventChannel.EventSink? = null
+    private var disposed = false
+    private val reconcileToken = Any()
+    private val permissionPending = mutableSetOf<String>()
     private val pendingEvents = ArrayDeque<Map<String, Any>>()
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(receiverContext: Context, intent: Intent) {
+            if (intent.action != ACTION_USB_PERMISSION) return
             val device = intent.usbDeviceExtra() ?: return
+            permissionPending.remove(device.deviceName)
+            val current = findDevice(device.deviceName)
             val granted = intent.getBooleanExtra(
                 UsbManager.EXTRA_PERMISSION_GRANTED, false)
-            val type = if (granted) "permissionGranted" else "permissionDenied"
-            emitEvent(type, device)
+            if (current != null) {
+                val type = if (granted && usbManager.hasPermission(current))
+                    "permissionGranted" else "permissionDenied"
+                emitEvent(type, current)
+            }
+            reconcileUsb("permission-result")
         }
     }
 
     private val detachReceiver = object : BroadcastReceiver() {
         override fun onReceive(receiverContext: Context, intent: Intent) {
             val device = intent.usbDeviceExtra() ?: return
+            permissionPending.remove(device.deviceName)
             emitEvent("detached", device)
             if (device.deviceName == openDeviceName) {
                 close()
             }
+            reconcileUsb("detached")
         }
     }
 
-    private val ioListener = object : SerialInputOutputManager.Listener {
+    private fun ioListener(serialPort: UsbSerialPort) = object : SerialInputOutputManager.Listener {
         override fun onNewData(data: ByteArray) {
             // onNewData runs on the reader thread; EventChannel sinks may
             // only be touched on the platform (main) thread.
-            mainHandler.post { dataSink?.success(data) }
+            mainHandler.post { if (port === serialPort) dataSink?.success(data) }
         }
 
         override fun onRunError(e: Exception) {
             // The port died under us (unplug, USB reset). Clean up; the
             // detach receiver tells Dart what happened.
-            mainHandler.post { synchronized(portLock) { closeLocked() } }
+            mainHandler.post {
+                if (port === serialPort) {
+                    Log.w("EspFlashUsb", "Serial reader failed", e)
+                    openDeviceName?.let { name ->
+                        findDevice(name)?.let { emitEvent("detached", it) }
+                    }
+                    close()
+                    reconcileUsb("reader-error")
+                }
+            }
         }
     }
 
@@ -119,6 +141,7 @@ class UsbSerialManager(private val context: Context) {
             detachReceiver,
             UsbManager.ACTION_USB_DEVICE_DETACHED,
         )
+        reconcileUsb("startup")
     }
 
     fun attachEventsChannel(channel: EventChannel) {
@@ -128,6 +151,7 @@ class UsbSerialManager(private val context: Context) {
                 events: EventChannel.EventSink?,
             ) {
                 eventsSink = events
+                reconcileUsb("events-listen")
                 if (events != null) {
                     while (pendingEvents.isNotEmpty()) {
                         events.success(pendingEvents.removeFirst())
@@ -160,6 +184,40 @@ class UsbSerialManager(private val context: Context) {
     fun listDevices(): List<Map<String, Any>> =
         prober.findAllDrivers(usbManager).map { deviceToMap(it.device) }
 
+    /** Raw Android enumeration, including devices without a serial driver. */
+    fun listRawDevices(): List<Map<String, Any>> =
+        usbManager.deviceList.values.map { device ->
+            deviceToMap(device) + mapOf(
+                "deviceName" to device.deviceName,
+                "androidDeviceId" to device.deviceId,
+                "deviceClass" to device.deviceClass,
+                "deviceSubclass" to device.deviceSubclass,
+                "deviceProtocol" to device.deviceProtocol,
+                "interfaceCount" to device.interfaceCount,
+                "hasPermission" to usbManager.hasPermission(device),
+                "hasSerialDriver" to (prober.probeDevice(device) != null),
+            )
+        }
+
+    /** Coalesce wake-up hints into a bounded, lifecycle-owned scan window. */
+    fun reconcileUsb(reason: String) {
+        if (disposed) return
+        mainHandler.removeCallbacksAndMessages(reconcileToken)
+        for (delay in longArrayOf(0, 100, 250, 500, 1000, 2000)) {
+            mainHandler.postAtTime({
+                if (!disposed) {
+                    try {
+                        val raw = listRawDevices()
+                        Log.i("EspFlashUsb", "USB snapshot reason=$reason delay=$delay raw=$raw")
+                        eventsSink?.success(mapOf("type" to "snapshot", "devices" to raw))
+                    } catch (e: Exception) {
+                        Log.w("EspFlashUsb", "USB snapshot failed reason=$reason", e)
+                    }
+                }
+            }, reconcileToken, android.os.SystemClock.uptimeMillis() + delay)
+        }
+    }
+
     fun hasPermission(deviceId: String): Boolean {
         val device = findDevice(deviceId) ?: return false
         return usbManager.hasPermission(device)
@@ -176,15 +234,25 @@ class UsbSerialManager(private val context: Context) {
             emitEvent("permissionGranted", device)
             return
         }
+        if (!permissionPending.add(deviceId)) return
+        // Match Dart's permission timeout so a missing callback cannot
+        // suppress an explicit retry forever.
+        mainHandler.postDelayed({ permissionPending.remove(deviceId) }, 60_000)
+        reconcileUsb("request-permission")
         // FLAG_MUTABLE is required: UsbService fills EXTRA_PERMISSION_GRANTED
         // into the PendingIntent's intent, which immutable intents drop.
         val pendingIntent = PendingIntent.getBroadcast(
             context,
-            0,
+            device.deviceId,
             Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
             PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        usbManager.requestPermission(device, pendingIntent)
+        try {
+            usbManager.requestPermission(device, pendingIntent)
+        } catch (e: Exception) {
+            permissionPending.remove(deviceId)
+            throw e
+        }
     }
 
     /**
@@ -195,8 +263,12 @@ class UsbSerialManager(private val context: Context) {
      * would time out without this.
      */
     fun open(deviceId: String) {
+        reconcileUsb("open")
         val device = findDevice(deviceId)
             ?: throw UsbException("notFound", "USB device $deviceId not attached")
+        if (!usbManager.hasPermission(device)) {
+            throw UsbException("permissionRequired", "USB permission is no longer granted")
+        }
         val driver = prober.probeDevice(device)
             ?: throw UsbException(
                 "noDriver",
@@ -220,15 +292,18 @@ class UsbSerialManager(private val context: Context) {
                 )
                 serialPort.setDTR(true)
                 serialPort.setRTS(true)
-                val manager = SerialInputOutputManager(serialPort, ioListener)
-                manager.start()
+                val manager = SerialInputOutputManager(serialPort, ioListener(serialPort))
                 port = serialPort
                 ioManager = manager
                 openDeviceName = device.deviceName
+                manager.start()
+                Log.i("EspFlashUsb", "Opened ${device.deviceName}")
             } catch (e: UsbException) {
+                closeLocked()
                 runCatching { connection.close() }
                 throw e
             } catch (e: Exception) {
+                closeLocked()
                 runCatching { connection.close() }
                 throw UsbException("openFailed", e.message ?: "open failed")
             }
@@ -276,6 +351,12 @@ class UsbSerialManager(private val context: Context) {
 
     /** Unregisters receivers and stops the write executor. */
     fun dispose() {
+        disposed = true
+        mainHandler.removeCallbacksAndMessages(null)
+        eventsSink = null
+        dataSink = null
+        permissionPending.clear()
+        pendingEvents.clear()
         close()
         writeExecutor.shutdownNow()
         context.unregisterReceiver(permissionReceiver)
@@ -284,7 +365,8 @@ class UsbSerialManager(private val context: Context) {
 
     /** Emits an attached event; used for USB_DEVICE_ATTACHED intents. */
     fun notifyAttached(device: UsbDevice) {
-        emitEvent("attached", device)
+        Log.i("EspFlashUsb", "Attach hint ${device.deviceName}")
+        reconcileUsb("attached")
     }
 
     private fun requirePort(): UsbSerialPort =
@@ -328,6 +410,7 @@ class UsbSerialManager(private val context: Context) {
             "productId" to device.productId,
         )
         mainHandler.post {
+            if (disposed) return@post
             val sink = eventsSink
             if (sink != null) {
                 sink.success(event)

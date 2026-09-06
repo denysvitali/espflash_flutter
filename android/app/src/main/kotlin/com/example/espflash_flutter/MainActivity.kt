@@ -61,6 +61,11 @@ class MainActivity : FlutterActivity() {
             try {
                 when (call.method) {
                     "listDevices" -> result.success(manager.listDevices())
+                    "listRawDevices" -> result.success(manager.listRawDevices())
+                    "reconcileUsb" -> {
+                        manager.reconcileUsb("manual-refresh")
+                        result.success(null)
+                    }
                     "hasPermission" -> result.success(
                         manager.hasPermission(call.deviceId()),
                     )
@@ -142,6 +147,11 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
         handleUsbIntent(intent)
         queueFirmwareIntent(intent, notifyFlutter = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        usb?.reconcileUsb("activity-resume")
     }
 
     override fun onDestroy() {

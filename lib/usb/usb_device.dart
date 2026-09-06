@@ -24,7 +24,8 @@ class UsbDevice {
     );
   }
 
-  /// Platform identifier (Android `UsbDevice.getDeviceName`).
+  /// Attachment-instance token (Android `UsbDevice.getDeviceName`).
+  /// Invalid after disconnect; never a durable hardware identity.
   final String deviceId;
 
   final int vendorId;
@@ -53,4 +54,24 @@ class UsbDevice {
   String toString() =>
       'UsbDevice($deviceId, ${vendorId.toRadixString(16)}:'
       '${productId.toRadixString(16)}, $label)';
+}
+
+/// Raw host enumeration, independent of serial-driver support.
+final class UsbDiagnosticDevice {
+  const UsbDiagnosticDevice({
+    required this.device,
+    required this.hasPermission,
+    required this.hasSerialDriver,
+  });
+
+  factory UsbDiagnosticDevice.fromMap(Map<Object?, Object?> map) =>
+      UsbDiagnosticDevice(
+        device: UsbDevice.fromMap(map),
+        hasPermission: map['hasPermission'] as bool,
+        hasSerialDriver: map['hasSerialDriver'] as bool,
+      );
+
+  final UsbDevice device;
+  final bool hasPermission;
+  final bool hasSerialDriver;
 }
