@@ -208,3 +208,25 @@ pubspec deps (keep minimal): `flutter_riverpod ^3`, `file_picker ^11.0.3`, `dio 
 3. **ROM erases up-front in FLASH_BEGIN; multi-MB images block ACK for tens of seconds → naive timeouts abort a working flash.** Mitigation: timeout = max(30s, 40s/MB) per FLASH_BEGIN; UI shows "Erasing (can take minutes)"; v2 stub moves erase just-in-time.
 
 Runners-up (not top-3): JitPack first-resolution flake → pin tag + warm gradle cache in CI; AGP 9 plugin breakage → reference patcher already copied; secure-boot/encrypted chips → refuse in chip_detect with clear message.
+
+## Implemented v2 flashing path
+
+The app now loads the pinned ESP32-C3 set-2 stub (esp-flasher-stub v1.2.2),
+waits for its OHAI greeting, and uses zlib-compressed FLASH_DEFL transfers
+with a 0x4000 maximum payload. Each part ends with FLASH_DEFL_END(1), keeping
+the stub alive for binary MD5 verification and the existing watchdog/RTS
+reset. ROM-only callers retain their original path. Stub erase uses the
+explicit ERASE_FLASH command; FLASH_DEFL_BEGIN schedules region erase as
+needed rather than invoking the ROM's up-front erase.
+
+UART bridges switch from 115200 to 460800 after stub startup and restore
+115200 after flashing. Built-in USB Serial/JTAG skips CHANGE_BAUD. UI
+progress is capped at ten intermediate updates per second; compressed
+transfer progress estimates original bytes by transfer ratio, with the last
+update held until FLASH_DEFL_END succeeds. Timeout budgets account for a
+compressed block expanding to an entire image. Ambiguous compressed writes
+are never automatically replayed. Asset origin and licenses are in NOTICE.
+
+The optional URL-manifest feature in the original roadmap is separate from
+this flashing-performance implementation; the existing raw URL and local
+bundle inputs continue to use the same flashing pipeline.

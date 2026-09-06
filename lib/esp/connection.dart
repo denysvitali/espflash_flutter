@@ -24,9 +24,13 @@ const int defaultSyncTries = 5;
 const int defaultConnectAttempts = 7;
 
 /// SYNC payload: `07 07 12 20` followed by 32 x `0x55`.
-final Uint8List syncPayload = Uint8List.fromList(
-  [0x07, 0x07, 0x12, 0x20, ...List<int>.filled(32, 0x55)],
-);
+final Uint8List syncPayload = Uint8List.fromList([
+  0x07,
+  0x07,
+  0x12,
+  0x20,
+  ...List<int>.filled(32, 0x55),
+]);
 
 final class EspConnection {
   EspConnection(
@@ -62,6 +66,9 @@ final class EspConnection {
   /// means a flasher stub (not the ROM) is already running.
   bool syncStubDetected = false;
 
+  /// Enabled only after the stub greeting (or a stub SYNC).
+  bool stubRunning = false;
+
   final SlipStream _slip = SlipStream();
   final List<Uint8List> _packets = <Uint8List>[];
   Completer<void>? _waiter;
@@ -73,6 +80,7 @@ final class EspConnection {
   /// [resetStrategy] runs before the sync tries of every attempt.
   /// Throws [EspSyncError] when all attempts fail.
   Future<void> connect({ResetStrategy? resetStrategy}) async {
+    stubRunning = false;
     Object? lastError;
     for (var attempt = 0; attempt < connectAttempts; attempt++) {
       if (resetStrategy != null) {
@@ -113,12 +121,10 @@ final class EspConnection {
     // answers 0.
     syncStubDetected = response.value == 0;
     for (var index = 0; index < 7; index++) {
-      final extra = await readResponse(
-        EspCommand.sync,
-        timeout: syncTimeout,
-      );
+      final extra = await readResponse(EspCommand.sync, timeout: syncTimeout);
       syncStubDetected = syncStubDetected && extra.value == 0;
     }
+    stubRunning = syncStubDetected;
     return response;
   }
 
@@ -161,7 +167,10 @@ final class EspConnection {
     while (true) {
       while (_packets.isNotEmpty) {
         final packet = _packets.removeAt(0);
-        final response = EspResponse.tryParse(packet);
+        final response = EspResponse.tryParse(
+          packet,
+          statusSize: stubRunning ? 2 : 4,
+        );
         if (response == null) {
           continue;
         }
@@ -195,6 +204,49 @@ final class EspConnection {
     }
   }
 
+  /// Consume the raw SLIP greeting, including one queued with MEM_END's ACK.
+  Future<void> waitForStub({
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final timer = Stopwatch()..start();
+    while (true) {
+      while (_packets.isNotEmpty) {
+        final packet = _packets.removeAt(0);
+        if (packet.length == 4 && String.fromCharCodes(packet) == 'OHAI') {
+          stubRunning = true;
+          return;
+        }
+      }
+      if (_lost) {
+        throw const EspDeviceLostError('USB device lost while starting stub');
+      }
+      final remaining = timeout - timer.elapsed;
+      if (remaining <= Duration.zero) {
+        throw const EspTimeoutError('Flasher stub did not send OHAI');
+      }
+      final waiter = Completer<void>();
+      _waiter = waiter;
+      try {
+        await waiter.future.timeout(remaining);
+      } on TimeoutException {
+        // Check the deadline and any queued greeting on the next iteration.
+      } finally {
+        _waiter = null;
+      }
+    }
+  }
+
+  /// Switch both endpoints only after the device ACKs at the old baud.
+  Future<void> changeBaud(int baud, {int currentBaud = 115200}) async {
+    if (transport.isUsbJtag || baud == currentBaud) return;
+    await command(
+      EspCommand.changeBaud,
+      data: [...u32le(baud), ...u32le(stubRunning ? currentBaud : 0)],
+    );
+    await transport.setBaud(baud);
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+
   /// Read a memory-mapped register; the value arrives in the
   /// response header.
   Future<int> readReg(int address, {Duration? timeout}) async {
@@ -202,7 +254,8 @@ final class EspConnection {
       EspCommand.readReg,
       data: u32le(address),
       timeout: timeout,
-      description: 'read register '
+      description:
+          'read register '
           '0x${address.toRadixString(16).padLeft(8, '0')}',
     );
     return response.value;
@@ -217,17 +270,19 @@ final class EspConnection {
     int delayUs = 0,
     Duration? timeout,
   }) async {
-    final data = (BytesBuilder(copy: false)
-          ..add(u32le(address))
-          ..add(u32le(value))
-          ..add(u32le(mask))
-          ..add(u32le(delayUs)))
-        .toBytes();
+    final data =
+        (BytesBuilder(copy: false)
+              ..add(u32le(address))
+              ..add(u32le(value))
+              ..add(u32le(mask))
+              ..add(u32le(delayUs)))
+            .toBytes();
     await command(
       EspCommand.writeReg,
       data: data,
       timeout: timeout,
-      description: 'write register '
+      description:
+          'write register '
           '0x${address.toRadixString(16).padLeft(8, '0')}',
     );
   }

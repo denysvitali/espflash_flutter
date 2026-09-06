@@ -413,7 +413,8 @@ class _FirmwareCard extends StatelessWidget {
                     contentPadding: EdgeInsets.zero,
                     title: const Text('Erase device before flashing'),
                     subtitle: const Text(
-                      'Removes all existing data on flash memory.',
+                      'Removes all saved settings and data. Can take minutes; '
+                      'leave off for normal updates.',
                     ),
                     value: eraseFirst,
                     onChanged: locked ? null : onEraseFirstChanged,

@@ -1,15 +1,15 @@
 /// Flash orchestration: SPI attach/params, per-part erase + block
 /// writes, MD5 verification, reboot.
 ///
-/// ROM-only sequence (no stub), mirroring esptool `write_flash` and
-/// IMPLEMENTATION_PLAN.md section 3: FLASH_END is deliberately NOT
-/// sent to the ROM, since it would make the bootloader exit and run
-/// user code before we reboot on our own terms.
+/// Uses compressed 16 KiB transfers when the RAM stub is active, while
+/// retaining the ROM path for callers that do not load a stub.
 library;
 
+import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
 
 import 'connection.dart';
@@ -21,7 +21,7 @@ import 'targets/chip_target.dart';
 /// One firmware part to write at [offset].
 final class FirmwarePart {
   FirmwarePart({required this.offset, required List<int> bytes, this.name})
-      : bytes = Uint8List.fromList(bytes);
+    : bytes = Uint8List.fromList(bytes);
 
   /// Flash address the part is written to.
   final int offset;
@@ -35,11 +35,8 @@ final class FirmwarePart {
 
 /// Progress callback: `(partIndex, bytesWritten, totalBytes)`,
 /// fired once before the first block and once after every block.
-typedef FlashProgressCallback = void Function(
-  int partIndex,
-  int written,
-  int total,
-);
+typedef FlashProgressCallback =
+    void Function(int partIndex, int written, int total);
 
 /// Cancellation probe; returning true aborts with
 /// [EspCancelledError].
@@ -97,10 +94,13 @@ final class EspFlasher {
     if (parts.isEmpty) {
       throw ArgumentError.value(parts, 'parts', 'must not be empty');
     }
-    final sorted = [...parts]
-      ..sort((a, b) => a.offset.compareTo(b.offset));
+    if (parts.any((part) => part.bytes.isEmpty)) {
+      throw ArgumentError('Firmware parts must not be empty');
+    }
+    final sorted = [...parts]..sort((a, b) => a.offset.compareTo(b.offset));
 
-    await spiAttach();
+    await _throwIfCancelled(isCancelled);
+    if (!connection.stubRunning) await spiAttach();
     await spiSetParams();
     if (eraseFirst) {
       await eraseFlash();
@@ -110,15 +110,29 @@ final class EspFlasher {
       await _writePart(index, sorted[index], onProgress, isCancelled);
     }
     for (final part in sorted) {
+      await _throwIfCancelled(isCancelled);
       await _verifyPart(part);
     }
+    await _throwIfCancelled(isCancelled);
     await reboot();
   }
 
   /// Erase the full assumed flash: FLASH_BEGIN with zero blocks
   /// (ROM erase-only). Takes roughly a minute per MB.
   Future<void> eraseFlash() async {
-    await _flashBegin(size: assumedFlashSize, offset: 0, numBlocks: 0);
+    if (connection.stubRunning) {
+      await connection.command(
+        EspCommand.eraseFlash,
+        timeout: _scaledTimeout(
+          flashBeginTimeoutPerMb,
+          flashBeginTimeoutFloor,
+          assumedFlashSize,
+        ),
+        description: 'erase all flash',
+      );
+    } else {
+      await _flashBegin(size: assumedFlashSize, offset: 0, numBlocks: 0);
+    }
   }
 
   /// Reboot into user code: RTC watchdog reset over USB-Serial-JTAG
@@ -134,10 +148,11 @@ final class EspFlasher {
 
   /// SPI_ATTACH: enable the SPI flash pins (`<u32 0><u32 0>`).
   Future<void> spiAttach() async {
-    final data = (BytesBuilder(copy: false)
-          ..add(u32le(0))
-          ..add(u32le(0)))
-        .toBytes();
+    final data =
+        (BytesBuilder(copy: false)
+              ..add(u32le(0))
+              ..add(u32le(0)))
+            .toBytes();
     await connection.command(
       EspCommand.spiAttach,
       data: data,
@@ -148,14 +163,15 @@ final class EspFlasher {
   /// SPI_SET_PARAMS: tell the ROM the "flashchip" geometry we assume
   /// (`id, total size, block, sector, page, status mask`).
   Future<void> spiSetParams() async {
-    final data = (BytesBuilder(copy: false)
-          ..add(u32le(0))
-          ..add(u32le(assumedFlashSize))
-          ..add(u32le(0x10000))
-          ..add(u32le(0x1000))
-          ..add(u32le(0x100))
-          ..add(u32le(0xFFFF)))
-        .toBytes();
+    final data =
+        (BytesBuilder(copy: false)
+              ..add(u32le(0))
+              ..add(u32le(assumedFlashSize))
+              ..add(u32le(0x10000))
+              ..add(u32le(0x1000))
+              ..add(u32le(0x100))
+              ..add(u32le(0xFFFF)))
+            .toBytes();
     await connection.command(
       EspCommand.spiSetParams,
       data: data,
@@ -171,13 +187,14 @@ final class EspFlasher {
     required int offset,
     required int numBlocks,
   }) async {
-    final data = (BytesBuilder(copy: false)
-          ..add(u32le(size))
-          ..add(u32le(numBlocks))
-          ..add(u32le(target.flashWriteSize))
-          ..add(u32le(offset))
-          ..add(u32le(0)))
-        .toBytes();
+    final data =
+        (BytesBuilder(copy: false)
+              ..add(u32le(size))
+              ..add(u32le(numBlocks))
+              ..add(u32le(target.flashWriteSize))
+              ..add(u32le(offset))
+              ..add(u32le(0)))
+            .toBytes();
     await connection.command(
       EspCommand.flashBegin,
       data: data,
@@ -196,6 +213,10 @@ final class EspFlasher {
     FlashProgressCallback? onProgress,
     CancelCheck? isCancelled,
   ) async {
+    if (connection.stubRunning) {
+      await _writeCompressedPart(partIndex, part, onProgress, isCancelled);
+      return;
+    }
     final total = part.bytes.length;
     final blockSize = target.flashWriteSize;
     final numBlocks = (total + blockSize - 1) ~/ blockSize;
@@ -214,17 +235,78 @@ final class EspFlasher {
     }
   }
 
+  Future<void> _writeCompressedPart(
+    int partIndex,
+    FirmwarePart part,
+    FlashProgressCallback? onProgress,
+    CancelCheck? isCancelled,
+  ) async {
+    final compressed = await _compressFirmware(part.bytes);
+    final blockSize = target.stubFlashWriteSize;
+    final blocks = (compressed.length + blockSize - 1) ~/ blockSize;
+    await _throwIfCancelled(isCancelled);
+    await connection.command(
+      EspCommand.flashDeflBegin,
+      data: [
+        ...u32le(part.bytes.length),
+        ...u32le(blocks),
+        ...u32le(blockSize),
+        ...u32le(part.offset),
+      ],
+      description: 'begin compressed flash',
+    );
+    onProgress?.call(partIndex, 0, part.bytes.length);
+    // A single compressed block can expand to the entire image. The stub
+    // ACKs receipt before programming, so the next ACK (or END) may wait
+    // for all that erase/write work. Use a conservative image-sized timeout.
+    final timeout = _scaledTimeout(
+      flashBeginTimeoutPerMb,
+      flashBeginTimeoutFloor,
+      part.bytes.length,
+    );
+    for (var seq = 0; seq < blocks; seq++) {
+      await _throwIfCancelled(isCancelled);
+      final end = math.min((seq + 1) * blockSize, compressed.length);
+      final block = compressed.sublist(seq * blockSize, end);
+      // No retransmission after an ambiguous ACK: replaying data can corrupt
+      // the stateful inflate stream. The user must restart the flash instead.
+      await connection.command(
+        EspCommand.flashDeflData,
+        data: [
+          ...u32le(block.length),
+          ...u32le(seq),
+          ...u32le(0),
+          ...u32le(0),
+          ...block,
+        ],
+        checksum: espChecksum(block),
+        timeout: timeout,
+        description: 'write compressed flash block $seq',
+      );
+      // Progress estimates original bytes from the compressed transfer ratio.
+      // Reserve completion until END confirms that programming has finished.
+      final written = math.min(
+        part.bytes.length - 1,
+        part.bytes.length * end ~/ compressed.length,
+      );
+      onProgress?.call(partIndex, math.max(0, written), part.bytes.length);
+    }
+    await _throwIfCancelled(isCancelled);
+    await connection.command(
+      EspCommand.flashDeflEnd,
+      data: u32le(1),
+      timeout: timeout,
+      description: 'finish compressed flash',
+    );
+    onProgress?.call(partIndex, part.bytes.length, part.bytes.length);
+  }
+
   /// Slice `[start, end)` of [bytes]; the final, short block is
   /// padded to the full [blockSize] with 0xFF (the erased flash
   /// value), per the declared wire format. The prefix `len` and the
   /// checksum both cover the transmitted, padded block, as the ROM
   /// verifies them.
-  Uint8List _prepareBlock(
-    Uint8List bytes,
-    int start,
-    int end,
-    int blockSize,
-  ) {
+  Uint8List _prepareBlock(Uint8List bytes, int start, int end, int blockSize) {
     var block = bytes.sublist(start, end);
     final padding = blockSize - block.length;
     if (padding != 0) {
@@ -238,13 +320,14 @@ final class EspFlasher {
   }
 
   Future<void> _flashBlock(Uint8List block, int sequence) async {
-    final data = (BytesBuilder(copy: false)
-          ..add(u32le(block.length))
-          ..add(u32le(sequence))
-          ..add(u32le(0))
-          ..add(u32le(0))
-          ..add(block))
-        .toBytes();
+    final data =
+        (BytesBuilder(copy: false)
+              ..add(u32le(block.length))
+              ..add(u32le(sequence))
+              ..add(u32le(0))
+              ..add(u32le(0))
+              ..add(block))
+            .toBytes();
     for (var attempt = 1; attempt <= blockAttempts; attempt++) {
       try {
         await connection.command(
@@ -266,12 +349,13 @@ final class EspFlasher {
   /// SPI_FLASH_MD5 over the part region; the ROM answers with 32
   /// ASCII hex chars which must match the MD5 of the part bytes.
   Future<void> _verifyPart(FirmwarePart part) async {
-    final data = (BytesBuilder(copy: false)
-          ..add(u32le(part.offset))
-          ..add(u32le(part.bytes.length))
-          ..add(u32le(0))
-          ..add(u32le(0)))
-        .toBytes();
+    final data =
+        (BytesBuilder(copy: false)
+              ..add(u32le(part.offset))
+              ..add(u32le(part.bytes.length))
+              ..add(u32le(0))
+              ..add(u32le(0)))
+            .toBytes();
     final response = await connection.command(
       EspCommand.spiFlashMd5,
       data: data,
@@ -283,13 +367,15 @@ final class EspFlasher {
       description: 'calculate flash MD5',
     );
     final body = response.body;
-    if (body.length < 32) {
+    final expectedLength = connection.stubRunning ? 16 : 32;
+    if (body.length != expectedLength) {
       throw EspVerifyError(
-        'MD5 response too short (${body.length} bytes)',
+        'Unexpected MD5 response length (${body.length} bytes)',
       );
     }
-    final flashMd5 =
-        String.fromCharCodes(body.sublist(0, 32)).toLowerCase();
+    final flashMd5 = connection.stubRunning
+        ? body.map((b) => b.toRadixString(16).padLeft(2, '0')).join()
+        : String.fromCharCodes(body).toLowerCase();
     final expectedMd5 = md5.convert(part.bytes).toString();
     if (flashMd5 != expectedMd5) {
       throw EspVerifyError(
@@ -313,3 +399,8 @@ final class EspFlasher {
     }
   }
 }
+
+// Capture only the firmware bytes, never the connection or UI callback, when
+// compressing off the UI isolate. This keeps Cancel responsive on large images.
+Future<Uint8List> _compressFirmware(Uint8List bytes) =>
+    Isolate.run(() => ZLibEncoder().encodeBytes(bytes));

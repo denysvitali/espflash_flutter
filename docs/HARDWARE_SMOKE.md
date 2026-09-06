@@ -45,3 +45,23 @@ noted.
       state; parts list survives
 - [ ] Encrypted / secure-download chip (if available) is refused with a
       clear message, never flashed
+
+## v2 compressed stub flashing
+
+These checks require a physical ESP32-C3; automated protocol tests do not
+establish USB timing, throughput, or reboot behavior on real hardware.
+
+- Flash a merged 4 MiB image on built-in USB Serial/JTAG. Confirm the log
+  reaches “Stub ready”, then MD5 verification and application boot. Record
+  total time and compare with the previous ROM build using the same image.
+- Repeat with incompressible firmware and a short image whose size is not
+  divisible by 16 KiB. Confirm both verify successfully.
+- Repeat through CP210x/CH340: confirm 460800 baud flashing and that the
+  monitor works at 115200 afterward. Flash again without closing the app.
+- Enable full erase, confirm saved settings disappear and MD5 passes.
+  Normal updates should leave full erase disabled.
+- Cancel during stub upload and during compressed transfer; retry after
+  resetting into download mode. Unplug during either phase and reconnect.
+- Confirm a missing stub greeting or failed transfer reports an error and
+  never displays successful verification. There is no automatic ROM fallback
+  after RAM execution or a partially transmitted compressed stream.

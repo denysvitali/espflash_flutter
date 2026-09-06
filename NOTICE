@@ -11,3 +11,17 @@ This project references and derives protocol knowledge from:
 
 Note: esptool.py is GPL-2.0 and was used as documentation reference only;
 no code from it is included in this project.
+
+ESP32-C3 flasher stub
+Copyright (c) 2026 Espressif Systems (Shanghai) CO LTD
+
+assets/stubs/esp32c3.json is an unmodified esp-flasher-stub v1.2.2 binary,
+vendored from espressif/esptool-js commit
+fd58496b2146fb356e97f074c81bf9709a547622:
+https://github.com/espressif/esptool-js/tree/fd58496b2146fb356e97f074c81bf9709a547622/src/targets/stub_flasher
+Sources: https://github.com/espressif/esp-flasher-stub/releases/tag/v1.2.2
+
+The binary is dual licensed under Apache-2.0 OR MIT. Both license texts
+are retained in assets/stubs/ and included in the application assets.
+The Dart upload and flashing implementation follows the protocol documented
+and implemented by espressif/esptool-js (Apache-2.0).

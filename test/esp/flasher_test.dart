@@ -56,18 +56,15 @@ void main() {
     await connection.close();
   });
 
-  List<RomRequest> requestsOf(int opcode) =>
-      transport.requestsFor(opcode);
+  List<RomRequest> requestsOf(int opcode) => transport.requestsFor(opcode);
 
-  test(
-      'full two-part flash: ATTACH, SET_PARAMS, BEGIN/DATA layout, '
+  test('full two-part flash: ATTACH, SET_PARAMS, BEGIN/DATA layout, '
       'MD5, reboot', () async {
     final ticks = <ProgressTick>[];
-    await flasher.flash(
-      [partA, partB],
-      onProgress: (part, written, total) =>
-          ticks.add((part, written, total)),
-    );
+    await flasher.flash([
+      partA,
+      partB,
+    ], onProgress: (part, written, total) => ticks.add((part, written, total)));
 
     // --- command order ---
     final opcodes = transport.requests.map((r) => r.opcode).toList();
@@ -90,8 +87,16 @@ void main() {
     ]);
 
     // --- SPI_ATTACH: <u32 0><u32 0> ---
-    expect(requestsOf(EspCommand.spiAttach).single.data,
-        [0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(requestsOf(EspCommand.spiAttach).single.data, [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+    ]);
 
     // --- SPI_SET_PARAMS: 0, 4MB, block, sector, page, status mask ---
     expect(requestsOf(EspCommand.spiSetParams).single.words, [
@@ -126,8 +131,7 @@ void main() {
     expect(blockA2.sublist(0, 0x101), partA.bytes.sublist(0x800));
     expect(blockA2.sublist(0x101), List<int>.filled(0x2FF, 0xFF));
     // Part B needs no padding.
-    expect(dataRequests[3].data.sublist(16),
-        partB.bytes.sublist(0, 0x400));
+    expect(dataRequests[3].data.sublist(16), partB.bytes.sublist(0, 0x400));
 
     // Header checksum = XOR over the transmitted block (seed 0xEF).
     for (final request in dataRequests) {
@@ -135,8 +139,10 @@ void main() {
     }
     // With 4-aligned data the transmitted checksum equals the one
     // over the unpadded data (part B is block-aligned).
-    expect(dataRequests[3].checksum,
-        espChecksum(partB.bytes.sublist(0, 0x400)));
+    expect(
+      dataRequests[3].checksum,
+      espChecksum(partB.bytes.sublist(0, 0x400)),
+    );
 
     // --- No FLASH_END is ever sent to the ROM ---
     expect(requestsOf(EspCommand.flashEnd), isEmpty);
@@ -158,9 +164,9 @@ void main() {
     ]);
 
     // --- reboot over USB-JTAG: RTC WDT reset writes ---
-    final rebootWrites = requestsOf(EspCommand.writeReg)
-        .map((r) => (readU32le(r.data), readU32le(r.data, 4)))
-        .toList();
+    final rebootWrites = requestsOf(
+      EspCommand.writeReg,
+    ).map((r) => (readU32le(r.data), readU32le(r.data, 4))).toList();
     expect(rebootWrites, [
       (0x600080A8, 0x50D83AA1),
       (0x60008094, 2000),
@@ -183,14 +189,12 @@ void main() {
   });
 
   test('MD5 comparison is case-insensitive', () async {
-    transport.md5Provider = (address, size) =>
-        md5Of(partB).toUpperCase();
+    transport.md5Provider = (address, size) => md5Of(partB).toUpperCase();
     await flasher.flash([partB]);
     expect(requestsOf(EspCommand.spiFlashMd5), hasLength(1));
   });
 
-  test('eraseFirst sends FLASH_BEGIN with num_blocks = 0 over 4MB',
-      () async {
+  test('eraseFirst sends FLASH_BEGIN with num_blocks = 0 over 4MB', () async {
     await flasher.flash([partB], eraseFirst: true);
     final begins = requestsOf(EspCommand.flashBegin);
     expect(begins, hasLength(2));
@@ -202,22 +206,22 @@ void main() {
 
   test('eraseFlash alone is one zero-block FLASH_BEGIN', () async {
     await flasher.eraseFlash();
-    expect(
-      requestsOf(EspCommand.flashBegin).single.words,
-      [0x400000, 0, 0x400, 0, 0],
-    );
+    expect(requestsOf(EspCommand.flashBegin).single.words, [
+      0x400000,
+      0,
+      0x400,
+      0,
+      0,
+    ]);
     expect(requestsOf(EspCommand.flashData), isEmpty);
   });
 
   test('cancel between blocks throws EspCancelledError', () async {
-    var cancelCalls = 0;
     await expectLater(
       () => flasher.flash(
         [partA],
         isCancelled: () async {
-          cancelCalls++;
-          // Let part start + block 0 through, stop before block 1.
-          return cancelCalls >= 3;
+          return requestsOf(EspCommand.flashData).isNotEmpty;
         },
       ),
       throwsA(isA<EspCancelledError>()),
@@ -229,10 +233,7 @@ void main() {
 
   test('cancel before anything is written', () async {
     await expectLater(
-      () => flasher.flash(
-        [partA],
-        isCancelled: () async => true,
-      ),
+      () => flasher.flash([partA], isCancelled: () async => true),
       throwsA(isA<EspCancelledError>()),
     );
     expect(requestsOf(EspCommand.flashBegin), isEmpty);
@@ -253,9 +254,7 @@ void main() {
     transport.flashDataFailures = 99;
     await expectLater(
       () => flasher.flash([small]),
-      throwsA(
-        isA<EspRomError>().having((e) => e.code, 'code', 0x0108),
-      ),
+      throwsA(isA<EspRomError>().having((e) => e.code, 'code', 0x0108)),
     );
     expect(requestsOf(EspCommand.flashData), hasLength(3));
   });
@@ -278,17 +277,11 @@ void main() {
     await bridgeFlasher.flash([partB]);
     await bridgeConnection.close();
     expect(bridge.requestsFor(EspCommand.writeReg), isEmpty);
-    expect(bridge.lineEvents, [
-      ('rts', true),
-      ('rts', false),
-    ]);
+    expect(bridge.lineEvents, [('rts', true), ('rts', false)]);
   });
 
   test('empty part list is rejected', () async {
-    await expectLater(
-      () => flasher.flash(const []),
-      throwsArgumentError,
-    );
+    await expectLater(() => flasher.flash(const []), throwsArgumentError);
   });
 
   test('single-byte part pads the final block to 0x400 with 0xFF', () async {

@@ -100,8 +100,7 @@ void main() {
 
     test('SLIP escaping covers header bytes too', () {
       // Checksum 0x00C000DB forces C0/DB into the header area.
-      final frame = EspRequest(0x03, const [1, 2, 3], 0x00C000DB)
-          .toFrame();
+      final frame = EspRequest(0x03, const [1, 2, 3], 0x00C000DB).toFrame();
       // No raw C0/DB except the framing and escape prefixes.
       expect(frame.first, 0xC0);
       expect(frame.last, 0xC0);
@@ -133,18 +132,14 @@ void main() {
     });
 
     test('rejects request-direction and short packets', () {
-      expect(EspResponse.tryParse([0x00, 0x08, 0, 0, 0, 0, 0, 0]),
-          isNull);
+      expect(EspResponse.tryParse([0x00, 0x08, 0, 0, 0, 0, 0, 0]), isNull);
       expect(EspResponse.tryParse([0x01, 0x08, 0]), isNull);
       expect(EspResponse.tryParse(const []), isNull);
     });
 
     test('reads ROM status from the LAST 4 payload bytes', () {
       // MD5-style: 32-byte result body, then [1, 7, 0, 0] status.
-      final payload = [
-        ...List<int>.filled(32, 0x30),
-        1, 7, 0, 0,
-      ];
+      final payload = [...List<int>.filled(32, 0x30), 1, 7, 0, 0];
       final response = EspResponse.tryParse([
         0x01, 0x13, // response, SPI_FLASH_MD5
         36, 0, // size
@@ -169,13 +164,12 @@ void main() {
       final response = EspResponse.tryParse([
         0x01, 0x03, 2, 0, 0, 0, 0, 0, //
         1, 8,
-      ])!;
+      ], statusSize: 2)!;
       expect(response.romStatus, (1, 8));
       expect(response.hasRomError, isTrue);
     });
 
-    test('throwIfRomError raises EspRomError with the combined code',
-        () {
+    test('throwIfRomError raises EspRomError with the combined code', () {
       final response = EspResponse.tryParse([
         0x01, 0x03, 4, 0, 0, 0, 0, 0, //
         1, 7, 0, 0,
@@ -185,8 +179,7 @@ void main() {
         throwsA(
           isA<EspRomError>()
               .having((e) => e.code, 'code', 0x0107)
-              .having((e) => e.message, 'message',
-                  contains('Checksum error')),
+              .having((e) => e.message, 'message', contains('Checksum error')),
         ),
       );
     });
@@ -216,8 +209,11 @@ void main() {
         0x0F, // invalid RAM binary address
       ];
       for (final code in codes) {
-        expect(romErrorText(code), isNot(contains('Unknown')),
-            reason: 'code 0x${code.toRadixString(16)}');
+        expect(
+          romErrorText(code),
+          isNot(contains('Unknown')),
+          reason: 'code 0x${code.toRadixString(16)}',
+        );
         // The esptool-style combined word maps to the same text.
         expect(romErrorText(0x100 | code), romErrorText(code));
       }

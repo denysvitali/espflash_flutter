@@ -43,6 +43,7 @@ abstract final class EspCommand {
   static const int flashDeflEnd = 0x12;
   static const int spiFlashMd5 = 0x13;
   static const int getSecurityInfo = 0x14;
+  static const int eraseFlash = 0xD0;
 }
 
 /// Seed value for the ESP ROM payload checksum.
@@ -139,7 +140,7 @@ final class RomError {
 /// A request heading for the ROM bootloader.
 final class EspRequest {
   EspRequest(this.opcode, [List<int> data = const [], this.checksum = 0])
-      : data = Uint8List.fromList(data);
+    : data = Uint8List.fromList(data);
 
   /// Direction byte for host-to-chip packets.
   static const int direction = 0x00;
@@ -173,6 +174,7 @@ final class EspResponse {
     required this.opcode,
     required this.value,
     required this.data,
+    this.statusSize = romStatusSize,
   });
 
   /// Direction byte for chip-to-host packets.
@@ -181,6 +183,8 @@ final class EspResponse {
   /// Number of trailing status bytes the ROM appends to the payload
   /// (`[status, error, rsvd, rsvd]`).
   static const int romStatusSize = 4;
+
+  final int statusSize;
 
   final int opcode;
 
@@ -193,14 +197,21 @@ final class EspResponse {
 
   /// Parse a decoded SLIP packet. Returns null when [packet] is too
   /// short for a header or is not a response (`direction != 0x01`).
-  static EspResponse? tryParse(List<int> packet) {
+  static EspResponse? tryParse(
+    List<int> packet, {
+    int statusSize = romStatusSize,
+  }) {
     if (packet.length < EspRequest.headerSize) {
       return null;
     }
     if (packet[0] != direction) {
       return null;
     }
+    if (readU16le(packet, 2) != packet.length - EspRequest.headerSize) {
+      return null;
+    }
     return EspResponse(
+      statusSize: statusSize,
       opcode: packet[1] & 0xFF,
       value: readU32le(packet, 4),
       data: Uint8List.fromList(packet.sublist(EspRequest.headerSize)),
@@ -208,18 +219,16 @@ final class EspResponse {
   }
 
   /// The trailing ROM status bytes: `[status, error]` plus reserved
-  /// bytes. The ROM pads them to [romStatusSize] bytes at the end of
-  /// the payload; shorter payloads (stub responses) carry just two.
+  /// bytes. The connection selects four bytes in ROM mode and two in
+  /// stub mode, regardless of the result payload length.
   (int status, int code) get romStatus {
-    if (data.length >= romStatusSize) {
+    if (data.length >= statusSize) {
       return (
-        data[data.length - romStatusSize] & 0xFF,
-        data[data.length - romStatusSize + 1] & 0xFF,
+        data[data.length - statusSize],
+        data[data.length - statusSize + 1],
       );
     }
-    if (data.length >= 2) {
-      return (data[0] & 0xFF, data[1] & 0xFF);
-    }
+
     return (0, 0);
   }
 
@@ -229,15 +238,21 @@ final class EspResponse {
   /// Payload minus the trailing ROM status bytes: the actual result
   /// data (e.g. the 32 ASCII hex chars of SPI_FLASH_MD5).
   Uint8List get body {
-    if (data.length <= romStatusSize) {
+    if (data.length <= statusSize) {
       return Uint8List(0);
     }
-    return Uint8List.fromList(data.sublist(0, data.length - romStatusSize));
+    return Uint8List.fromList(data.sublist(0, data.length - statusSize));
   }
 
   /// Throw [EspRomError] when the ROM reported a failure for the
   /// command described by [opDescription].
   void throwIfRomError(String opDescription) {
+    if (data.length < statusSize) {
+      throw EspRomError(
+        0x105,
+        'Truncated status while trying to $opDescription',
+      );
+    }
     if (!hasRomError) {
       return;
     }

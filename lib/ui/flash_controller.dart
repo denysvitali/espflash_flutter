@@ -7,10 +7,10 @@
 library;
 
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
@@ -20,6 +20,7 @@ import '../esp/errors.dart';
 import '../esp/firmware_bundle.dart';
 import '../esp/flasher.dart';
 import '../esp/reset.dart';
+import '../esp/stub.dart';
 import '../esp/targets/chip_target.dart';
 import '../usb/android_usb_transport.dart';
 import '../usb/usb_device.dart';
@@ -185,6 +186,7 @@ final class FlashController extends Notifier<FlashState> {
     final transport = AndroidUsbTransport(service: _usb, device: device);
     final connection = EspConnection(transport);
     _connection = connection;
+    await transport.setBaud(115200);
     await connection.connect(
       resetStrategy: device.isUsbJtag
           ? const UsbJtagReset()
@@ -228,6 +230,23 @@ final class FlashController extends Notifier<FlashState> {
       await _enterBootloader(device);
       final connection = _connection!;
       final target = _target!;
+      _log('Loading the ESP32-C3 RAM flasher stub …');
+      final stub = StubImage.fromJson(
+        await rootBundle.loadString('assets/stubs/esp32c3.json'),
+      );
+      await StubLoader(
+        connection,
+        target,
+      ).load(stub, isCancelled: () async => _cancelRequested);
+      if (!device.isUsbJtag) {
+        _log('Switching UART to 460800 baud …');
+        await connection.changeBaud(460800);
+      }
+      _log('Stub ready: compressed transfers with 16 KiB blocks.');
+      if (eraseFirst) {
+        _log('Erasing all flash data first; this can take minutes.');
+      }
+      final progressClock = Stopwatch()..start();
       _log(
         'Flashing ${firmware.name} at 0x${offset.toRadixString(16)} '
         '(${firmware.bytes.length} bytes)…',
@@ -242,7 +261,12 @@ final class FlashController extends Notifier<FlashState> {
         ],
         eraseFirst: eraseFirst,
         onProgress: (int partIndex, int written, int total) {
-          state = state.copyWith(bytesWritten: written, bytesTotal: total);
+          if (written == 0 ||
+              written == total ||
+              progressClock.elapsedMilliseconds >= 100) {
+            state = state.copyWith(bytesWritten: written, bytesTotal: total);
+            progressClock.reset();
+          }
         },
         isCancelled: () async => _cancelRequested,
       );
@@ -263,6 +287,13 @@ final class FlashController extends Notifier<FlashState> {
     // after a failure): drop the protocol layer, keep the port open so
     // the monitor can watch the firmware boot.
     await _closeConnection();
+    if (!device.isUsbJtag) {
+      try {
+        await _usb.setBaud(115200);
+      } on Object catch (error) {
+        _log('Could not restore serial baud: $error');
+      }
+    }
     session.release(DeviceActivity.flashing);
     state = state.copyWith(
       phase: FlashPhase.idle,

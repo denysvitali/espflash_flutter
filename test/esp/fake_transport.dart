@@ -96,9 +96,7 @@ final class RomRequest {
 
   /// Request payload read as little-endian u32 words.
   List<int> get words {
-    return [
-      for (var i = 0; i + 4 <= data.length; i += 4) readU32le(data, i),
-    ];
+    return [for (var i = 0; i + 4 <= data.length; i += 4) readU32le(data, i)];
   }
 }
 
@@ -118,6 +116,10 @@ final class FakeRomTransport extends FakeTransport {
 
   /// Value in the SYNC response header (ROM answers non-zero).
   int syncValue = 0x0BAD0001;
+
+  bool stubMode = false;
+  bool startStubOnMemEnd = false;
+  bool sendStubGreeting = true;
 
   /// GET_SECURITY_INFO payload fields.
   int securityFlags = 0;
@@ -166,32 +168,45 @@ final class FakeRomTransport extends FakeTransport {
     }
     final error = romErrorFor[request.opcode];
     if (error != null) {
-      respond(request.opcode, data: [1, error, 0, 0]);
+      respond(
+        request.opcode,
+        data: [
+          1,
+          error,
+          if (!stubMode) ...[0, 0],
+        ],
+      );
       return;
     }
     switch (request.opcode) {
+      case EspCommand.memEnd:
+        respond(request.opcode);
+        if (startStubOnMemEnd) {
+          stubMode = true;
+          if (sendStubGreeting) feed(SlipCodec.encode('OHAI'.codeUnits));
+        }
       case EspCommand.sync:
         respond(request.opcode, value: syncValue);
       case EspCommand.readReg:
-        respond(
-          request.opcode,
-          value: registers[readU32le(request.data)] ?? 0,
-        );
+        respond(request.opcode, value: registers[readU32le(request.data)] ?? 0);
       case EspCommand.spiFlashMd5:
         final provider = md5Provider;
         final hex = provider != null
-            ? provider(
-                readU32le(request.data),
-                readU32le(request.data, 4),
-              )
+            ? provider(readU32le(request.data), readU32le(request.data, 4))
             : (md5Hex ?? '0' * 32);
-        respond(request.opcode, data: [
-          ...hex.codeUnits,
-          0,
-          0,
-          0,
-          0,
-        ]);
+        respond(
+          request.opcode,
+          data: [
+            if (stubMode) ...[
+              for (var i = 0; i < hex.length; i += 2)
+                int.parse(hex.substring(i, i + 2), radix: 16),
+            ] else
+              ...hex.codeUnits,
+            0,
+            0,
+            if (!stubMode) ...[0, 0],
+          ],
+        );
       case EspCommand.flashData:
         if (flashDataFailuresSeen < flashDataFailures) {
           flashDataFailuresSeen++;
@@ -222,14 +237,15 @@ final class FakeRomTransport extends FakeTransport {
 
   /// Feed a ROM success response for [opcode].
   void respond(int opcode, {int value = 0, List<int>? data}) {
-    final payload = data ?? const [0, 0, 0, 0];
-    final packet = (BytesBuilder(copy: false)
-          ..addByte(0x01)
-          ..addByte(opcode & 0xFF)
-          ..add(u16le(payload.length))
-          ..add(u32le(value))
-          ..add(payload))
-        .toBytes();
+    final payload = data ?? (stubMode ? const [0, 0] : const [0, 0, 0, 0]);
+    final packet =
+        (BytesBuilder(copy: false)
+              ..addByte(0x01)
+              ..addByte(opcode & 0xFF)
+              ..add(u16le(payload.length))
+              ..add(u32le(value))
+              ..add(payload))
+            .toBytes();
     feed(SlipCodec.encode(packet));
   }
 }
