@@ -84,6 +84,12 @@ final usbServiceProvider = Provider<UsbService>((ref) => UsbService());
 final class DeviceSession extends Notifier<DeviceSessionState> {
   DeviceSession([UsbService? usb]) : _injected = usb;
 
+  static const _emptyHostMessage =
+      'No USB device detected. Check the cable and enable OTG '
+      'in Settings, then retry.';
+  static const _unsupportedMessage =
+      'USB device detected, but no supported serial driver was found.';
+
   final UsbService? _injected;
   late final UsbService _usb = _injected ?? ref.read(usbServiceProvider);
 
@@ -156,11 +162,13 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
           ? devices.single.deviceId
           : null,
       error: () => devices.isNotEmpty
-          ? null
+          ? (state.error == _emptyHostMessage ||
+                    state.error == _unsupportedMessage
+                ? null
+                : state.error)
           : raw.isEmpty
-          ? 'No USB device detected. Check the cable and enable OTG '
-                'in Settings, then retry.'
-          : 'USB device detected, but no supported serial driver was found.',
+          ? _emptyHostMessage
+          : _unsupportedMessage,
     );
   }
 

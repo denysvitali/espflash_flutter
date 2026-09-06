@@ -80,7 +80,7 @@ class UsbSerialManager(private val context: Context) {
     private var dataSink: EventChannel.EventSink? = null
     private var disposed = false
     private val reconcileToken = Any()
-    private val permissionPending = mutableSetOf<String>()
+    private val permissionPending = mutableMapOf<String, Any>()
     private val pendingEvents = ArrayDeque<Map<String, Any>>()
 
     private val permissionReceiver = object : BroadcastReceiver() {
@@ -234,10 +234,16 @@ class UsbSerialManager(private val context: Context) {
             emitEvent("permissionGranted", device)
             return
         }
-        if (!permissionPending.add(deviceId)) return
+        if (permissionPending.containsKey(deviceId)) return
+        val requestToken = Any()
+        permissionPending[deviceId] = requestToken
         // Match Dart's permission timeout so a missing callback cannot
         // suppress an explicit retry forever.
-        mainHandler.postDelayed({ permissionPending.remove(deviceId) }, 60_000)
+        mainHandler.postDelayed({
+            if (permissionPending[deviceId] === requestToken) {
+                permissionPending.remove(deviceId)
+            }
+        }, 60_000)
         reconcileUsb("request-permission")
         // FLAG_MUTABLE is required: UsbService fills EXTRA_PERMISSION_GRANTED
         // into the PendingIntent's intent, which immutable intents drop.

@@ -231,6 +231,8 @@ void main() {
     usb.openFailures = 10;
     await expectLater(session.connect(), throwsA(isA<PlatformException>()));
     expect(usb.opened, hasLength(5));
+    usb.snapshot([diagnostic(device)]);
+    expect(container.read(deviceSessionProvider).error, contains('openFailed'));
     expect(container.read(deviceSessionProvider).isConnected, isFalse);
   });
 
