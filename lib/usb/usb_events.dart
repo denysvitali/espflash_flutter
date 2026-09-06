@@ -15,14 +15,29 @@ sealed class UsbEvent {
   /// platform-side contract drift fails loudly instead of dropping
   /// silently into the UI state machine.
   factory UsbEvent.fromMap(Map<Object?, Object?> map) {
+    if (map['type'] == 'observerState') {
+      return UsbObserverState(
+        epoch: (map['epoch'] as num).toInt(),
+        active: map['active'] as bool,
+      );
+    }
     if (map['type'] == 'snapshot') {
+      final status = UsbScanStatus.values.byName(map['status'] as String);
       return UsbSnapshot(
-        (map['devices'] as List<Object?>)
-            .map(
-              (entry) =>
-                  UsbDiagnosticDevice.fromMap(entry as Map<Object?, Object?>),
-            )
-            .toList(),
+        status == UsbScanStatus.error
+            ? const []
+            : (map['devices'] as List<Object?>)
+                  .map(
+                    (entry) => UsbDiagnosticDevice.fromMap(
+                      entry as Map<Object?, Object?>,
+                    ),
+                  )
+                  .toList(),
+        epoch: (map['epoch'] as num).toInt(),
+        sequence: (map['sequence'] as num).toInt(),
+        stage: UsbScanStage.values.byName(map['stage'] as String),
+        status: status,
+        scanError: map['scanError'] as String?,
       );
     }
     final deviceId = map['deviceId'] as String;
@@ -135,8 +150,31 @@ final class UsbPermissionDenied extends UsbDeviceEvent {
   String toString() => 'UsbPermissionDenied($deviceId)';
 }
 
-/// An authoritative raw Android snapshot, including unsupported peripherals.
+enum UsbScanStatus { ok, error }
+
+enum UsbScanStage { raw, enriched }
+
+/// Raw roster and enrichment share an epoch/sequence. Errors have no roster.
 final class UsbSnapshot extends UsbEvent {
-  const UsbSnapshot(this.devices);
+  const UsbSnapshot(
+    this.devices, {
+    required this.epoch,
+    required this.sequence,
+    required this.stage,
+    this.status = UsbScanStatus.ok,
+    this.scanError,
+  });
   final List<UsbDiagnosticDevice> devices;
+  final int epoch;
+  final int sequence;
+  final UsbScanStage stage;
+  final UsbScanStatus status;
+  final String? scanError;
+}
+
+/// Visibility controls observation; pausing invalidates pending enrichment.
+final class UsbObserverState extends UsbEvent {
+  const UsbObserverState({required this.epoch, required this.active});
+  final int epoch;
+  final bool active;
 }

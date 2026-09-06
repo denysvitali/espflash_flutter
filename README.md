@@ -114,35 +114,16 @@ MIT
 
 ### USB detection and OTG troubleshooting
 
-Discovery reads Android's current USB device list at startup, when the activity
-resumes (including returning from OTG settings), and after attach, detach and
-permission events. Each trigger coalesces pending scans into a bounded window at
-0/100/250/500/1000/2000 ms; it does not poll indefinitely. The refresh button also
-starts this window. Unsupported peripherals are distinguished from an empty
-Android host list.
+USB discovery uses an independent one-second watchdog while the activity is
+visible, plus fast reconciliation bursts on lifecycle/USB/refresh hints. Raw
+Android attachment paths are reported before driver probing or metadata access.
+Enumeration errors preserve last known state and display a stale-observation
+message; probe errors are distinct from unsupported devices or an empty bus.
 
-USB paths identify individual attachments, not persistent hardware. If a board
-re-enumerates while connecting or running, the old session is canceled. The new
-attachment is selected automatically only when it is the sole supported device;
-press Connect again to check its permission and open it. The app never transfers
-a permission grant or silently resumes flashing on another attachment. Transient
-open failures retry at most five times while the same attachment remains present.
+This is observation resilience, not a demonstrated fix for the OnePlus failure.
+USB paths remain attachment tokens: reconnecting requires a fresh connection
+attempt, and flashing does not automatically resume on a replacement device.
 
-For OnePlus/OxygenOS failures, enable OTG in Settings and return to the app. If
-Android still sees nothing, check the data cable, USB-C orientation and a powered
-hub. USB debugging is not needed for normal operation.
-
-For diagnosis, capture `adb logcat -v threadtime -s EspFlashUsb` over wireless ADB
-and `adb shell dumpsys usb` **during the failure, before toggling OTG**. The log
-includes raw paths, VID/PID, interface counts, permission and driver support, plus
-the scan trigger. `UsbService.listRawDevices()` exposes raw device classification
-to Dart; native snapshots contain additional descriptor diagnostics. An empty raw
-list means Android has not exposed the peripheral; app retries cannot force the
-phone's USB host controller to enumerate it.
-
-Physical qualification remains necessary: on OnePlus and a reference phone, test
-cold launch, already attached, foreground attach, return from OTG settings,
-permission denial/grant, rapid detach/reconnect, two adapters on a hub, and a full
-flash. Record Android/OxygenOS build, VID/PID, cable and power topology; compare
-failed and successful raw snapshots. CI covers session races and builds the APK,
-but cannot validate OEM USB-C/VBUS behavior.
+See the [detailed investigation and diagnostic plan](docs/usb-diagnostics.md) for
+the snapshot contract, worker design, full-log capture commands, physical controls
+and acceptance criteria. Capture the failure before toggling OTG or debugging.

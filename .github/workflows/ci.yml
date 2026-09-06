@@ -200,6 +200,10 @@ jobs:
           KEYSTORE_KEY_PASSWORD: ${{ secrets.KEYSTORE_KEY_PASSWORD }}
           KEYSTORE_KEY_ALIAS: ${{ secrets.KEYSTORE_KEY_ALIAS }}
 
+      - name: Test native USB observer
+        working-directory: android
+        run: mise exec -- ./gradlew :app:testDevelopmentDebugUnitTest
+
       - name: Upload Debug APK
         uses: actions/upload-artifact@v7
         with:
@@ -315,6 +319,10 @@ jobs:
             echo "::endgroup::"
             exit "$status"
           fi
+
+      - name: Test native USB observer
+        working-directory: android
+        run: mise exec -- ./gradlew :app:testProductionDebugUnitTest
 
       - name: Upload Release APK
         uses: actions/upload-artifact@v7

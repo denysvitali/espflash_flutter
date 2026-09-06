@@ -66,15 +66,14 @@ class UsbService {
     return devices;
   }
 
-  /// Raw Android devices, including unsupported serial peripherals.
-  Future<List<UsbDiagnosticDevice>> listRawDevices() async {
-    final raw = await _methods.invokeMethod<List<Object?>>('listRawDevices');
-    return (raw ?? const <Object?>[])
-        .map(
-          (entry) =>
-              UsbDiagnosticDevice.fromMap(entry as Map<Object?, Object?>),
-        )
-        .toList();
+  /// Raw-only observation. A scan error is distinct from a successful empty
+  /// roster. No metadata reads or serial probing run on this request's path.
+  Future<UsbSnapshot> listRawDevices() async {
+    final raw = await _methods.invokeMethod<Map<Object?, Object?>>(
+      'listRawDevices',
+    );
+    if (raw == null) throw const FormatException('Missing USB observation');
+    return UsbEvent.fromMap(raw) as UsbSnapshot;
   }
 
   /// Request a bounded native scan window; snapshots arrive on [events].

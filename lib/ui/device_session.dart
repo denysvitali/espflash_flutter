@@ -14,6 +14,7 @@ library;
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -36,6 +37,10 @@ final class DeviceSessionState {
     this.connection = DeviceConnection.disconnected,
     this.activity = DeviceActivity.none,
     this.error,
+    this.rawDevices = const [],
+    this.observerActive = false,
+    this.observationStale = true,
+    this.observationError,
   });
 
   final List<UsbDevice> devices;
@@ -43,6 +48,10 @@ final class DeviceSessionState {
   final DeviceConnection connection;
   final DeviceActivity activity;
   final String? error;
+  final List<UsbDiagnosticDevice> rawDevices;
+  final bool observerActive;
+  final bool observationStale;
+  final String? observationError;
 
   bool get isConnected => connection == DeviceConnection.connected;
 
@@ -61,6 +70,10 @@ final class DeviceSessionState {
     DeviceConnection? connection,
     DeviceActivity? activity,
     String? Function()? error,
+    List<UsbDiagnosticDevice>? rawDevices,
+    bool? observerActive,
+    bool? observationStale,
+    String? Function()? observationError,
   }) {
     return DeviceSessionState(
       devices: devices ?? this.devices,
@@ -70,6 +83,12 @@ final class DeviceSessionState {
       connection: connection ?? this.connection,
       activity: activity ?? this.activity,
       error: error != null ? error() : this.error,
+      rawDevices: rawDevices ?? this.rawDevices,
+      observerActive: observerActive ?? this.observerActive,
+      observationStale: observationStale ?? this.observationStale,
+      observationError: observationError != null
+          ? observationError()
+          : this.observationError,
     );
   }
 }
@@ -90,6 +109,20 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
   static const _unsupportedMessage =
       'USB device detected, but no supported serial driver was found.';
 
+  static const _checkingMessage =
+      'USB device detected. Checking serial support…';
+  static const _probeErrorMessage =
+      'USB device detected, but serial driver detection failed.';
+  static const _metadataErrorMessage =
+      'USB device detected, but some device details could not be read.';
+  static const _discoveryMessages = {
+    _emptyHostMessage,
+    _unsupportedMessage,
+    _checkingMessage,
+    _probeErrorMessage,
+    _metadataErrorMessage,
+  };
+
   final UsbService? _injected;
   late final UsbService _usb = _injected ?? ref.read(usbServiceProvider);
 
@@ -100,7 +133,10 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
   bool _connectingInFlight = false;
   Future<void> _closing = Future<void>.value();
   int _connectionGeneration = 0;
-  int _snapshotGeneration = 0;
+  int _observerEpoch = -1;
+  int _observerSequence = -1;
+  int _observerStage = -1;
+  Timer? _observationDeadline;
 
   /// Fires when the device goes away while connected.
   final StreamController<void> _lostController =
@@ -114,12 +150,19 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
   DeviceSessionState build() {
     _eventsSub ??= _usb.events.listen(
       _onUsbEvent,
-      onError: (Object _) {
-        // No USB host stack (desktop, tests).
+      onError: (Object error) {
+        if (_disposed) return;
+        _observationDeadline?.cancel();
+        debugPrint('EspFlashUsb stage=dart-stream-error error=$error');
+        state = state.copyWith(
+          observationStale: true,
+          observationError: () => 'USB observation stream failed: $error',
+        );
       },
     );
     ref.onDispose(() async {
       _disposed = true;
+      _observationDeadline?.cancel();
       _connectionGeneration++;
       _completePermission(false);
       await _eventsSub?.cancel();
@@ -130,45 +173,131 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
   }
 
   Future<void> refreshDevices() async {
-    final generation = ++_snapshotGeneration;
     try {
+      // One event path owns state. A method response cannot overwrite a newer
+      // raw observation or bypass epoch/sequence validation.
       await _usb.reconcileUsb();
-      final devices = await _usb.listRawDevices();
-      if (!_disposed && generation == _snapshotGeneration) {
-        _applySnapshot(devices);
-      }
     } on Object catch (error) {
-      if (!_disposed && generation == _snapshotGeneration) {
-        state = state.copyWith(error: () => 'USB not available: $error');
+      if (!_disposed) {
+        state = state.copyWith(
+          observationStale: true,
+          observationError: () => 'USB discovery request failed: $error',
+        );
       }
     }
   }
 
+  void _armObservationDeadline() {
+    _observationDeadline?.cancel();
+    if (!state.observerActive) return;
+    _observationDeadline = Timer(const Duration(seconds: 3), () {
+      if (!_disposed) {
+        state = state.copyWith(
+          observationStale: true,
+          observationError: () =>
+              'USB discovery is not returning fresh scans. '
+              'Showing last known devices.',
+        );
+      }
+    });
+  }
+
+  void _applyObservation(UsbSnapshot snapshot) {
+    _traceObservation(snapshot, 'dart-received');
+    if (snapshot.epoch < _observerEpoch ||
+        (snapshot.epoch == _observerEpoch &&
+            (snapshot.sequence < _observerSequence ||
+                (snapshot.sequence == _observerSequence &&
+                    snapshot.stage.index <= _observerStage)))) {
+      _traceObservation(snapshot, 'dart-discarded');
+      return;
+    }
+    final newRaw =
+        snapshot.epoch != _observerEpoch ||
+        snapshot.sequence != _observerSequence;
+    _observerEpoch = snapshot.epoch;
+    _observerSequence = snapshot.sequence;
+    _observerStage = snapshot.stage.index;
+    if (snapshot.status == UsbScanStatus.error) {
+      _observationDeadline?.cancel();
+      state = state.copyWith(
+        observationStale: true,
+        observationError: () =>
+            'USB enumeration failed: '
+            '${snapshot.scanError ?? 'unknown error'}. '
+            'Showing last known devices.',
+      );
+    } else {
+      _applySnapshot(snapshot.devices);
+      // Enrichment is not a new raw observation and must not extend freshness.
+      if (newRaw) {
+        state = state.copyWith(
+          observationStale: false,
+          observationError: () => null,
+        );
+        _armObservationDeadline();
+      }
+    }
+    _traceObservation(snapshot, 'dart-applied');
+  }
+
+  void _traceObservation(UsbSnapshot snapshot, String stage) {
+    debugPrint(
+      'EspFlashUsb epoch=${snapshot.epoch} seq=${snapshot.sequence} '
+      'stage=$stage observationStage=${snapshot.stage.name} '
+      'status=${snapshot.status.name} '
+      'count=${snapshot.status == UsbScanStatus.ok ? snapshot.devices.length : 'unavailable'} '
+      'wallMs=${DateTime.now().millisecondsSinceEpoch}',
+    );
+  }
+
   void _applySnapshot(List<UsbDiagnosticDevice> raw) {
-    final devices = raw
-        .where((d) => d.hasSerialDriver)
-        .map((d) => d.device)
-        .toList();
     final current = state.selectedDeviceId;
-    final stillAttached = devices.any((d) => d.deviceId == current);
+    // Presence comes exclusively from a successful raw roster, never from
+    // whether optional metadata/probing happened to succeed this time.
+    final stillAttached = raw.any((d) => d.deviceId == current);
     if (!stillAttached && state.connection != DeviceConnection.disconnected) {
       _deviceLost();
     }
+    final previous = {
+      for (final device in state.devices) device.deviceId: device,
+    };
+    final devices = <UsbDevice>[];
+    for (final entry in raw) {
+      final supported = entry.hasSerialDriver ? entry.device : null;
+      final retainKnown =
+          entry.probeStatus != UsbProbeStatus.unsupported ||
+          (entry.deviceId == current &&
+              state.connection != DeviceConnection.disconnected);
+      final device =
+          supported ?? (retainKnown ? previous[entry.deviceId] : null);
+      if (device != null) devices.add(device);
+    }
+    final String? discoveryMessage;
+    if (devices.isNotEmpty) {
+      discoveryMessage = null;
+    } else if (raw.isEmpty) {
+      discoveryMessage = _emptyHostMessage;
+    } else if (raw.any((d) => d.probeStatus == UsbProbeStatus.error)) {
+      discoveryMessage = _probeErrorMessage;
+    } else if (raw.every((d) => d.probeStatus == UsbProbeStatus.unsupported)) {
+      discoveryMessage = _unsupportedMessage;
+    } else if (raw.any((d) => d.probeStatus == UsbProbeStatus.pending)) {
+      discoveryMessage = _checkingMessage;
+    } else {
+      discoveryMessage = _metadataErrorMessage;
+    }
     state = state.copyWith(
+      rawDevices: raw,
       devices: devices,
-      selectedDeviceId: () => stillAttached
+      selectedDeviceId: () => devices.any((d) => d.deviceId == current)
           ? current
           : devices.length == 1
           ? devices.single.deviceId
           : null,
-      error: () => devices.isNotEmpty
-          ? (state.error == _emptyHostMessage ||
-                    state.error == _unsupportedMessage
-                ? null
-                : state.error)
-          : raw.isEmpty
-          ? _emptyHostMessage
-          : _unsupportedMessage,
+      error: () =>
+          discoveryMessage ??
+          (_discoveryMessages.contains(state.error) ? null : state.error),
     );
   }
 
@@ -346,8 +475,20 @@ final class DeviceSession extends Notifier<DeviceSessionState> {
     if (_disposed) return;
     switch (event) {
       case UsbSnapshot():
-        _snapshotGeneration++;
-        _applySnapshot(event.devices);
+        _applyObservation(event);
+      case UsbObserverState():
+        if (event.epoch < _observerEpoch) return;
+        if (event.epoch != _observerEpoch) {
+          _observerEpoch = event.epoch;
+          _observerSequence = -1;
+          _observerStage = -1;
+        }
+        state = state.copyWith(
+          observerActive: event.active,
+          observationStale: true,
+          observationError: () => null,
+        );
+        _armObservationDeadline();
       case UsbPermissionGranted():
         if (event.deviceId == _permissionDeviceId) _completePermission(true);
       case UsbPermissionDenied():

@@ -153,6 +153,10 @@ class DeviceBar extends ConsumerWidget {
             );
           },
         ),
+        if (state.observationError != null) ...<Widget>[
+          const SizedBox(height: 10),
+          AppBanner(message: state.observationError!, isError: true),
+        ],
         if (state.error != null) ...<Widget>[
           const SizedBox(height: 10),
           AppBanner(message: state.error!, isError: true),

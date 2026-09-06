@@ -33,6 +33,24 @@ void main() {
   tearDown(() => fake.uninstall());
 
   group('method channel', () {
+    test(
+      'raw observation preserves enumeration errors without device list',
+      () async {
+        fake.rawSnapshot = {
+          'type': 'snapshot',
+          'epoch': 5,
+          'sequence': 6,
+          'stage': 'raw',
+          'status': 'error',
+          'scanError': 'binder failed',
+        };
+        final snapshot = await service.listRawDevices();
+        expect(snapshot.status, UsbScanStatus.error);
+        expect(snapshot.scanError, 'binder failed');
+        expect(fake.calls.single.method, 'listRawDevices');
+      },
+    );
+
     test('listDevices parses device maps', () async {
       fake.devices = <Object?>[
         <String, Object?>{

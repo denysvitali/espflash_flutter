@@ -58,80 +58,86 @@ class MainActivity : FlutterActivity() {
         }
 
         methodChannel.setMethodCallHandler { call, result ->
-            try {
-                when (call.method) {
-                    "listDevices" -> result.success(manager.listDevices())
-                    "listRawDevices" -> result.success(manager.listRawDevices())
-                    "reconcileUsb" -> {
-                        manager.reconcileUsb("manual-refresh")
-                        result.success(null)
-                    }
-                    "hasPermission" -> result.success(
-                        manager.hasPermission(call.deviceId()),
-                    )
-                    "requestPermission" -> {
-                        manager.requestPermission(call.deviceId())
-                        result.success(null)
-                    }
-                    "open" -> {
-                        manager.open(call.deviceId())
-                        result.success(null)
-                    }
-                    "close" -> {
-                        manager.close()
-                        result.success(null)
-                    }
-                    "write" -> {
-                        val bytes = call.argument<ByteArray>("bytes")
-                            ?: throw UsbException(
-                                "badArgs", "write needs a bytes argument")
-                        // Result is answered by the manager once the write
-                        // thread is done; do not answer it here.
-                        manager.write(bytes, result)
-                    }
-                    "setBaud" -> {
-                        val baud = call.argument<Number>("baud")?.toInt()
-                            ?: throw UsbException(
-                                "badArgs", "setBaud needs a baud argument")
-                        manager.setBaud(baud)
-                        result.success(null)
-                    }
-                    "setDtr" -> {
-                        manager.setDtr(call.boolArg("value"))
-                        result.success(null)
-                    }
-                    "setRts" -> {
-                        manager.setRts(call.boolArg("value"))
-                        result.success(null)
-                    }
-                    "jtagOpen" -> result.success(
-                        jtagManager.open(call.deviceId()),
-                    )
-                    "jtagWrite" -> {
-                        val bytes = call.argument<ByteArray>("bytes")
-                            ?: throw UsbException(
-                                "badArgs", "jtagWrite needs a bytes argument")
-                        // Answered asynchronously by the JTAG executor.
-                        jtagManager.write(bytes, result)
-                    }
-                    "jtagRead" -> {
-                        val maxLen = call.argument<Number>("maxLen")?.toInt()
-                            ?: throw UsbException(
-                                "badArgs", "jtagRead needs a maxLen argument")
-                        val timeoutMs =
-                            call.argument<Number>("timeoutMs")?.toInt() ?: 500
-                        jtagManager.read(maxLen, timeoutMs, result)
-                    }
-                    "jtagClose" -> {
-                        jtagManager.close()
-                        result.success(null)
-                    }
-                    else -> result.notImplemented()
+            // Observation bypasses the port worker, including during a slow
+            // open/close. Flutter results/events are delivered on main.
+            when (call.method) {
+                "listRawDevices" -> manager.listRawDevices(result)
+                "reconcileUsb" -> {
+                    manager.reconcileUsb("manual-refresh")
+                    result.success(null)
                 }
-            } catch (e: UsbException) {
-                result.error(e.code, e.message, null)
-            } catch (e: Exception) {
-                result.error("usbError", e.message ?: e.toString(), null)
+                else -> manager.runOperation(result) { channelResult ->
+                    try {
+                        when (call.method) {
+                            "listDevices" -> channelResult.success(manager.listDevices())
+                            "hasPermission" -> channelResult.success(
+                                manager.hasPermission(call.deviceId()),
+                            )
+                            "requestPermission" -> {
+                                manager.requestPermission(call.deviceId())
+                                channelResult.success(null)
+                            }
+                            "open" -> {
+                                manager.open(call.deviceId())
+                                channelResult.success(null)
+                            }
+                            "close" -> {
+                                manager.close()
+                                channelResult.success(null)
+                            }
+                            "write" -> {
+                                val bytes = call.argument<ByteArray>("bytes")
+                                    ?: throw UsbException(
+                                        "badArgs", "write needs a bytes argument")
+                                // Result is answered by the manager once the write
+                                // thread is done; do not answer it here.
+                                manager.write(bytes, channelResult)
+                            }
+                            "setBaud" -> {
+                                val baud = call.argument<Number>("baud")?.toInt()
+                                    ?: throw UsbException(
+                                        "badArgs", "setBaud needs a baud argument")
+                                manager.setBaud(baud)
+                                channelResult.success(null)
+                            }
+                            "setDtr" -> {
+                                manager.setDtr(call.boolArg("value"))
+                                channelResult.success(null)
+                            }
+                            "setRts" -> {
+                                manager.setRts(call.boolArg("value"))
+                                channelResult.success(null)
+                            }
+                            "jtagOpen" -> channelResult.success(
+                                jtagManager.open(call.deviceId()),
+                            )
+                            "jtagWrite" -> {
+                                val bytes = call.argument<ByteArray>("bytes")
+                                    ?: throw UsbException(
+                                        "badArgs", "jtagWrite needs a bytes argument")
+                                // Answered asynchronously by the JTAG executor.
+                                jtagManager.write(bytes, channelResult)
+                            }
+                            "jtagRead" -> {
+                                val maxLen = call.argument<Number>("maxLen")?.toInt()
+                                    ?: throw UsbException(
+                                        "badArgs", "jtagRead needs a maxLen argument")
+                                val timeoutMs =
+                                    call.argument<Number>("timeoutMs")?.toInt() ?: 500
+                                jtagManager.read(maxLen, timeoutMs, channelResult)
+                            }
+                            "jtagClose" -> {
+                                jtagManager.close()
+                                channelResult.success(null)
+                            }
+                            else -> channelResult.notImplemented()
+                        }
+                    } catch (e: UsbException) {
+                        channelResult.error(e.code, e.message, null)
+                    } catch (e: Exception) {
+                        channelResult.error("usbError", e.message ?: e.toString(), null)
+                    }
+                }
             }
         }
     }
@@ -149,15 +155,25 @@ class MainActivity : FlutterActivity() {
         queueFirmwareIntent(intent, notifyFlutter = true)
     }
 
+    override fun onStart() {
+        super.onStart()
+        usb?.startObserving()
+    }
+
+    override fun onStop() {
+        usb?.stopObserving()
+        super.onStop()
+    }
+
     override fun onResume() {
         super.onResume()
         usb?.reconcileUsb("activity-resume")
     }
 
     override fun onDestroy() {
-        usb?.dispose()
+        val jtagToDispose = jtag
+        usb?.dispose { jtagToDispose?.dispose() }
         usb = null
-        jtag?.dispose()
         jtag = null
         firmwareSourcesChannel?.setMethodCallHandler(null)
         firmwareSourcesChannel = null

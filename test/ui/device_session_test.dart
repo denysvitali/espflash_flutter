@@ -18,9 +18,13 @@ const replacement = UsbDevice(
 
 UsbDiagnosticDevice diagnostic(UsbDevice device, {bool supported = true}) =>
     UsbDiagnosticDevice(
-      device: device,
+      deviceId: device.deviceId,
+      vendorId: device.vendorId,
+      productId: device.productId,
       hasPermission: true,
-      hasSerialDriver: supported,
+      probeStatus: supported
+          ? UsbProbeStatus.supported
+          : UsbProbeStatus.unsupported,
     );
 
 class SessionUsb extends UsbService {
@@ -31,7 +35,8 @@ class SessionUsb extends UsbService {
   bool permission = true;
   int openFailures = 0;
   int scans = 0;
-  Completer<List<UsbDiagnosticDevice>>? delayedRaw;
+  int epoch = 1;
+  int sequence = 0;
   Completer<bool>? delayedPermission;
 
   @override
@@ -39,14 +44,19 @@ class SessionUsb extends UsbService {
   @override
   Future<void> reconcileUsb() async {
     scans++;
+    snapshot(raw);
   }
 
   @override
-  Future<List<UsbDiagnosticDevice>> listRawDevices() async =>
-      delayedRaw == null ? raw : delayedRaw!.future;
+  Future<UsbSnapshot> listRawDevices() async => UsbSnapshot(
+    raw,
+    epoch: epoch,
+    sequence: ++sequence,
+    stage: UsbScanStage.raw,
+  );
   @override
   Future<List<UsbDevice>> listDevices() async =>
-      raw.where((d) => d.hasSerialDriver).map((d) => d.device).toList();
+      raw.where((d) => d.hasSerialDriver).map((d) => d.device!).toList();
   @override
   Future<bool> hasPermission(UsbDevice device) async =>
       delayedPermission == null ? permission : delayedPermission!.future;
@@ -68,7 +78,14 @@ class SessionUsb extends UsbService {
 
   void snapshot(List<UsbDiagnosticDevice> devices) {
     raw = devices;
-    controller.add(UsbSnapshot(raw));
+    controller.add(
+      UsbSnapshot(
+        raw,
+        epoch: epoch,
+        sequence: ++sequence,
+        stage: UsbScanStage.enriched,
+      ),
+    );
   }
 
   void grant(String id) => controller.add(
@@ -120,15 +137,148 @@ void main() {
     expect(state.error, contains('no supported serial driver'));
   });
 
-  test('old refresh cannot overwrite a newer platform snapshot', () async {
-    usb.delayedRaw = Completer<List<UsbDiagnosticDevice>>();
-    final refresh = session.refreshDevices();
-    await flush();
+  test('old enrichment cannot overwrite a newer raw attachment', () {
+    final oldSequence = usb.sequence;
     usb.snapshot([diagnostic(replacement)]);
-    usb.delayedRaw!.complete([diagnostic(device)]);
-    await refresh;
+    usb.controller.add(
+      UsbSnapshot(
+        [diagnostic(device)],
+        epoch: usb.epoch,
+        sequence: oldSequence,
+        stage: UsbScanStage.enriched,
+      ),
+    );
     expect(container.read(deviceSessionProvider).selectedDeviceId, 'new');
   });
+
+  test(
+    'scan errors preserve connected device and mark last observation stale',
+    () async {
+      await session.connect();
+      usb.controller.add(
+        UsbSnapshot(
+          const [],
+          epoch: usb.epoch,
+          sequence: ++usb.sequence,
+          stage: UsbScanStage.raw,
+          status: UsbScanStatus.error,
+          scanError: 'SecurityException: host query',
+        ),
+      );
+      final state = container.read(deviceSessionProvider);
+      expect(state.isConnected, isTrue);
+      expect(state.selectedDeviceId, 'old');
+      expect(state.rawDevices.single.deviceId, 'old');
+      expect(state.observationStale, isTrue);
+      expect(state.observationError, contains('host query'));
+      usb.snapshot([]);
+      expect(container.read(deviceSessionProvider).isConnected, isFalse);
+      expect(container.read(deviceSessionProvider).observationStale, isFalse);
+    },
+  );
+
+  test('raw-only roster and probe error cannot manufacture a detach', () async {
+    await session.connect();
+    usb.controller.add(
+      UsbSnapshot(
+        const [UsbDiagnosticDevice(deviceId: 'old')],
+        epoch: usb.epoch,
+        sequence: ++usb.sequence,
+        stage: UsbScanStage.raw,
+      ),
+    );
+    expect(container.read(deviceSessionProvider).isConnected, isTrue);
+    expect(container.read(deviceSessionProvider).selectedDeviceId, 'old');
+    usb.controller.add(
+      UsbSnapshot(
+        const [
+          UsbDiagnosticDevice(
+            deviceId: 'old',
+            probeStatus: UsbProbeStatus.error,
+            probeError: 'bad descriptor',
+          ),
+        ],
+        epoch: usb.epoch,
+        sequence: usb.sequence,
+        stage: UsbScanStage.enriched,
+      ),
+    );
+    final state = container.read(deviceSessionProvider);
+    expect(state.isConnected, isTrue);
+    expect(state.selectedDeviceId, 'old');
+    expect(state.rawDevices.single.probeError, 'bad descriptor');
+  });
+
+  test(
+    'probe failure on a newly seen device is explicit, not an empty host',
+    () {
+      usb.snapshot([]);
+      usb.snapshot(const [
+        UsbDiagnosticDevice(
+          deviceId: 'new',
+          probeStatus: UsbProbeStatus.error,
+          probeError: 'bad descriptor',
+        ),
+      ]);
+      final state = container.read(deviceSessionProvider);
+      expect(state.rawDevices.single.deviceId, 'new');
+      expect(state.devices, isEmpty);
+      expect(state.error, contains('driver detection failed'));
+      expect(state.observationStale, isFalse);
+    },
+  );
+
+  test('old epoch is rejected even with a higher sequence', () {
+    final oldEpoch = usb.epoch;
+    usb.controller.add(UsbObserverState(epoch: ++usb.epoch, active: false));
+    usb.snapshot([diagnostic(replacement)]);
+    usb.controller.add(
+      UsbSnapshot(
+        [diagnostic(device)],
+        epoch: oldEpoch,
+        sequence: 9999,
+        stage: UsbScanStage.enriched,
+      ),
+    );
+    expect(container.read(deviceSessionProvider).selectedDeviceId, 'new');
+  });
+
+  test(
+    'stalled observer is stale without disconnect; resume recovers',
+    () async {
+      await session.connect();
+      usb.controller.add(UsbObserverState(epoch: ++usb.epoch, active: true));
+      usb.controller.add(
+        UsbSnapshot(
+          [diagnostic(device)],
+          epoch: usb.epoch,
+          sequence: ++usb.sequence,
+          stage: UsbScanStage.raw,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 3010));
+      expect(container.read(deviceSessionProvider).observationStale, isTrue);
+      expect(container.read(deviceSessionProvider).isConnected, isTrue);
+      // Late enrichment is not a fresh raw observation.
+      usb.controller.add(
+        UsbSnapshot(
+          [diagnostic(device)],
+          epoch: usb.epoch,
+          sequence: usb.sequence,
+          stage: UsbScanStage.enriched,
+        ),
+      );
+      expect(container.read(deviceSessionProvider).observationStale, isTrue);
+      usb.controller.add(UsbObserverState(epoch: ++usb.epoch, active: false));
+      await flush();
+      usb.controller.add(UsbObserverState(epoch: ++usb.epoch, active: true));
+      usb.snapshot([diagnostic(device)]);
+      expect(container.read(deviceSessionProvider).observationStale, isFalse);
+      expect(container.read(deviceSessionProvider).observationError, isNull);
+      container.dispose();
+      await flush();
+    },
+  );
 
   test(
     'permission is instance-specific and duplicate callbacks are harmless',

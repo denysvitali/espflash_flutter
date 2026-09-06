@@ -23,6 +23,14 @@ class FakeUsbPlatform {
 
   /// Canned `hasPermission` response.
   bool permission = true;
+  Map<String, Object?> rawSnapshot = {
+    'type': 'snapshot',
+    'epoch': 1,
+    'sequence': 1,
+    'stage': 'raw',
+    'status': 'ok',
+    'devices': <Object?>[],
+  };
 
   void install() {
     messenger.setMockMethodCallHandler(
@@ -73,6 +81,8 @@ class FakeUsbPlatform {
       throw injected;
     }
     switch (call.method) {
+      case 'listRawDevices':
+        return rawSnapshot;
       case 'listDevices':
         return devices;
       case 'hasPermission':
@@ -83,8 +93,9 @@ class FakeUsbPlatform {
   }
 
   Future<void> _push(String channel, Object? value) async {
-    final ByteData envelope =
-        const StandardMethodCodec().encodeSuccessEnvelope(value);
+    final ByteData envelope = const StandardMethodCodec().encodeSuccessEnvelope(
+      value,
+    );
     await messenger.handlePlatformMessage(channel, envelope, (ByteData? _) {});
   }
 }

@@ -56,22 +56,58 @@ class UsbDevice {
       '${productId.toRadixString(16)}, $label)';
 }
 
-/// Raw host enumeration, independent of serial-driver support.
+/// Driver matching is enrichment, never evidence of raw attachment presence.
+enum UsbProbeStatus { pending, supported, unsupported, error }
+
+/// A raw attachment survives missing metadata, permission and probing errors.
 final class UsbDiagnosticDevice {
   const UsbDiagnosticDevice({
-    required this.device,
-    required this.hasPermission,
-    required this.hasSerialDriver,
+    required this.deviceId,
+    this.vendorId,
+    this.productId,
+    this.label,
+    this.hasPermission,
+    this.probeStatus = UsbProbeStatus.pending,
+    this.probeError,
+    this.fieldErrors = const {},
   });
 
   factory UsbDiagnosticDevice.fromMap(Map<Object?, Object?> map) =>
       UsbDiagnosticDevice(
-        device: UsbDevice.fromMap(map),
-        hasPermission: map['hasPermission'] as bool,
-        hasSerialDriver: map['hasSerialDriver'] as bool,
+        deviceId: map['deviceId'] as String,
+        vendorId: (map['vendorId'] as num?)?.toInt(),
+        productId: (map['productId'] as num?)?.toInt(),
+        label: map['label'] as String?,
+        hasPermission: map['hasPermission'] as bool?,
+        probeStatus: UsbProbeStatus.values.byName(map['probeStatus'] as String),
+        probeError: map['probeError'] as String?,
+        fieldErrors:
+            (map['fieldErrors'] as Map<Object?, Object?>?)
+                ?.cast<String, String>() ??
+            const {},
       );
 
-  final UsbDevice device;
-  final bool hasPermission;
-  final bool hasSerialDriver;
+  final String deviceId;
+  final int? vendorId;
+  final int? productId;
+  final String? label;
+  final bool? hasPermission;
+  final UsbProbeStatus probeStatus;
+  final String? probeError;
+  final Map<String, String> fieldErrors;
+
+  bool get hasSerialDriver => probeStatus == UsbProbeStatus.supported;
+
+  /// Available only after the necessary metadata was read successfully.
+  UsbDevice? get device {
+    final vendor = vendorId;
+    final product = productId;
+    if (vendor == null || product == null) return null;
+    return UsbDevice(
+      deviceId: deviceId,
+      vendorId: vendor,
+      productId: product,
+      label: label ?? '',
+    );
+  }
 }

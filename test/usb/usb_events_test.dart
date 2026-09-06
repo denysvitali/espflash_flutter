@@ -1,31 +1,81 @@
 import 'package:espflash_flutter/usb/usb_events.dart';
+import 'package:espflash_flutter/usb/usb_device.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   group('UsbEvent.fromMap', () {
-    test('parses raw snapshots without requiring an attachment token', () {
+    test('raw roster does not require device metadata or probe result', () {
       final event =
           UsbEvent.fromMap({
                 'type': 'snapshot',
+                'epoch': 4,
+                'sequence': 1,
+                'stage': 'raw',
+                'status': 'ok',
+                'devices': [
+                  {'deviceId': 'raw', 'probeStatus': 'pending'},
+                ],
+              })
+              as UsbSnapshot;
+      expect(event.epoch, 4);
+      expect(event.devices.single.deviceId, 'raw');
+      expect(event.devices.single.device, isNull);
+      expect(event.devices.single.hasPermission, isNull);
+      expect(event.devices.single.probeStatus, UsbProbeStatus.pending);
+    });
+
+    test(
+      'enumeration failure has no roster and differs from successful empty',
+      () {
+        final error =
+            UsbEvent.fromMap({
+                  'type': 'snapshot',
+                  'epoch': 4,
+                  'sequence': 2,
+                  'stage': 'raw',
+                  'status': 'error',
+                  'scanError': 'host error',
+                })
+                as UsbSnapshot;
+        expect(error.status, UsbScanStatus.error);
+        expect(error.scanError, 'host error');
+        final empty =
+            UsbEvent.fromMap({
+                  'type': 'snapshot',
+                  'epoch': 4,
+                  'sequence': 3,
+                  'stage': 'raw',
+                  'status': 'ok',
+                  'devices': [],
+                })
+                as UsbSnapshot;
+        expect(empty.status, UsbScanStatus.ok);
+        expect(empty.devices, isEmpty);
+      },
+    );
+
+    test('per-device probe and optional field errors survive decoding', () {
+      final event =
+          UsbEvent.fromMap({
+                'type': 'snapshot',
+                'epoch': 4,
+                'sequence': 1,
+                'stage': 'enriched',
+                'status': 'ok',
                 'devices': [
                   {
                     'deviceId': 'raw',
-                    'vendorId': 1,
-                    'productId': 2,
-                    'hasPermission': false,
-                    'hasSerialDriver': false,
+                    'probeStatus': 'error',
+                    'probeError': 'broken descriptor',
+                    'label': null,
+                    'fieldErrors': {'label': 'permission required'},
                   },
                 ],
               })
               as UsbSnapshot;
-      expect(event.devices.single.device.deviceId, 'raw');
-      expect(event.devices.single.hasSerialDriver, isFalse);
-      expect(event.devices.single.hasPermission, isFalse);
-      expect(
-        (UsbEvent.fromMap({'type': 'snapshot', 'devices': []}) as UsbSnapshot)
-            .devices,
-        isEmpty,
-      );
+      expect(event.devices.single.probeStatus, UsbProbeStatus.error);
+      expect(event.devices.single.probeError, 'broken descriptor');
+      expect(event.devices.single.fieldErrors['label'], 'permission required');
     });
 
     test('parses attached', () {
